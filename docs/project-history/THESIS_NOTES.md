@@ -22,6 +22,16 @@ Potential thesis figure:
 
 `macro body -> tile -> subtile -> exported patch -> FE elements -> solver result -> thickness update`
 
+### Persistent-topology invariant
+
+The optimization now treats node IDs, element IDs, C3D8 connectivity, exported
+patch order, and element-to-subtile ownership as persistent topology. Later INP
+files update node coordinates and are rejected if their topology differs. This
+is appropriate only while lattice layout, mesh sampling, and export ordering
+remain fixed. The implementation was compile-checked and its C3D8 parsing
+assumption was checked against one existing 229,376-element INP; a complete
+multi-iteration runtime experiment is still required.
+
 ## Multi-body method currently implemented
 
 - Load multiple trivariate macro bodies from one ITD input.

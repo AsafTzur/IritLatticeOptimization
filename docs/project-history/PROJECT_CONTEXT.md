@@ -33,9 +33,11 @@ without checking their timestamps and contents.
 5. Allocate the persistent global tile/subtile design structure.
 6. Generate each body's microstructure and combine the results for export.
 7. Record the exported geometry-patch-to-tile/subtile ownership map.
-8. Export ITD and INP geometry.
+8. Export ITD and INP geometry; initialize FE topology on the first export and
+   verify the same topology on later exports while updating node coordinates.
 9. Run ANSYS or CalculiX.
-10. Read element SED/volume results and associate them with subtiles.
+10. Read element SED/volume results through persistent element-to-subtile
+    associations.
 11. Update thickness design variables and match neighbours within each body.
 12. Record results and repeat until convergence or the iteration limit.
 

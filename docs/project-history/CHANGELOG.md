@@ -3,6 +3,35 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-10-24 — Persistent finite-element topology
+
+Purpose: retain the optimization model's node, element, and element-to-subtile
+topology across iterations while allowing geometry coordinates, solver fields,
+and thickness design variables to change.
+
+Changes:
+
+- Extended `OptElementStruct` with the eight persistent C3D8 node IDs.
+- Changed repeated INP parsing to update node coordinates in place and verify
+  that node IDs, element IDs, element connectivity, and counts remain stable.
+- Removed per-iteration destruction of the node and element arrays.
+- Bound element pointers to subtiles once and preserved those associations
+  while clearing only solver-derived tile/subtile values.
+- Preserved the first exported mesh-ownership sequence and verified every later
+  geometry generation against it.
+- Created Git baseline commit `e94f17c` before the refactor so the change has a
+  reviewable before/after history.
+
+Verification:
+
+- Compiled `test.c` successfully with Visual C++ 2022 using the IRIT Windows
+  defines and local NLopt headers. Only existing IRIT/Windows header warnings
+  were emitted.
+- Scanned `C:\IRIT\ASAF\RUN\TEMP_SET\optimized_geo.inp`: 340,948 sequential
+  nodes and 229,376 sequential C3D8 elements were found; every element row had
+  one element ID and eight node IDs.
+- A complete multi-iteration optimization run was not performed.
+
 ## 2026-10-24 — Local Git history initialized
 
 Purpose: provide exact, recoverable, line-by-line history without depending on

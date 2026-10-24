@@ -56,3 +56,19 @@ Before implementation, choose the required geometric target:
 The finite-element connection strategy must also be selected: conforming merged
 nodes versus an explicit tied/contact/coupling formulation.
 
+## D-005 — Persist and verify finite-element topology
+
+Date: 2026-10-24
+
+Decision: Allocate node and element containers on the first generated INP,
+retain element connectivity and element-to-subtile pointers for the entire
+optimization, and treat later INP files as coordinate updates that must pass a
+strict topology comparison.
+
+Reason: Thickness changes deform the generated node coordinates but, with a
+fixed lattice layout and mesh sampling, should not change node IDs, element
+IDs, C3D8 connectivity, patch order, or ownership. Preserving this invariant
+removes redundant topology reconstruction and prevents silent result-mapping
+errors. A detected topology change aborts processing rather than leaving stale
+pointers active.
+

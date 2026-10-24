@@ -98,3 +98,30 @@ this inspection.
 project-related chats to read the core history files and this handoff, maintain
 concise working state, and avoid claiming memory that is not present in the
 active conversation or workspace records.
+
+## Persistent-topology implementation
+
+The immediate implemented step toward the simplified pipeline is to keep FE
+topology persistent across iterations. `test.c` now stores all eight node IDs
+for each C3D8 element, updates node coordinates in place when a new INP is
+read, and verifies node IDs, element IDs, connectivity, counts, exported patch
+order, and mesh ownership against the first iteration. Subtile element pointers
+remain valid because the element array is no longer freed or reallocated after
+initialization. Solver-derived values are still cleared and recomputed, and
+thickness remains the evolving design variable.
+
+Validation performed:
+
+- Visual C++ 2022 compile of `test.c`: successful; only pre-existing external
+  header warnings.
+- Existing 36 MB INP scan: 340,948 nodes, 229,376 C3D8 elements, sequential
+  IDs, and zero malformed connectivity rows.
+- No full optimization or two-iteration runtime validation was run.
+
+Git baseline commit: `e94f17c` (`Establish IRIT optimization baseline`). The
+persistent-topology change is tracked separately from that baseline.
+
+The unified multi-body logical-grid refactor remains separate work. Current
+body-block flattening does not yet encode a combined 3D placement, so
+`NeighbourMatchingB()` must not simply have its body boundary removed until
+that placement is represented.

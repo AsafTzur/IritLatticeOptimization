@@ -76,6 +76,7 @@ typedef struct OptNodeStruct {
 
 typedef struct OptElementStruct {
     int Id;
+    int NodeIds[8];
     CagdRType SED;
     CagdRType Volume;
     CagdRType StrainEnergy;
@@ -226,11 +227,12 @@ struct OptWorkflowStateStruct {
     OptBodyStruct *Bodies;
     int BodyCount, TotalTiles;
     OptMeshOwnerStruct *MeshOwners;
-    int MeshOwnerCount, MeshOwnerCapacity;
+    int MeshOwnerCount, MeshOwnerCapacity, MeshOwnerCursor;
+    CagdBType MeshTopologyInitialized;
     OptTileStruct *TileStructure;    /* Persistent tile/subtile topology.
-                                       * Analysis fields and FE links are
-                                       * refreshed each iteration; thickness
-                                       * is retained. */
+                                       * FE links/connectivity are retained;
+                                       * coordinates, analysis fields, and
+                                       * thickness values are updated. */
     CagdRType *Results;              /* Flat array [Iter][3]. */
     OptLegacyStateStruct Legacy;     /* Per-run IRIT CSV/callback state. */
 };
@@ -813,8 +815,6 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
 
     /* Read the IRIT mesh first; this also gives us reliable node IDs and
      * coordinates for constructing the support and load node sets. */
-    NodeArrayReset(&Opt -> Nodes);
-    ElementArrayReset(&Opt -> Elements);
     if (!ReadINP(Opt, Opt -> Config.InpFile) ||
         Opt -> Nodes.Count == 0 || Opt -> Elements.Count == 0) {
         fprintf(stderr, "CalculiX: cannot read IRIT mesh %s\n",
@@ -1160,8 +1160,6 @@ Cleanup:
         IritFree(ElementVolume);
     if (NodeDisp != NULL)
         IritFree(NodeDisp);
-    NodeArrayReset(&Opt -> Nodes);
-    ElementArrayReset(&Opt -> Elements);
     return Ok;
 }
 
@@ -1184,8 +1182,6 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
     CagdRType *PrevThickness;
     char TargetBaseFolder[OPT_MAX_PATH];
 
-    NodeArrayReset(&Opt -> Nodes);
-    ElementArrayReset(&Opt -> Elements);
     ScalarFieldReset(&Opt -> SedData);
     ScalarFieldReset(&Opt -> VolumeData);
 
@@ -1498,15 +1494,19 @@ static void UpdateTileAnalysisData(OptWorkflowStateStruct *Opt)
                 Opt -> MeshSample);
         OptFatal("Mesh element count does not match exported ownership map");
     }
-    for (I = 0; I < Opt -> Elements.Count; ++I) {
-        OptMeshOwnerStruct *Owner = &Opt -> MeshOwners[I / Opt -> MeshSample];
-        if (Opt -> Elements.Items[I].Id != I + 1)
-            OptFatal("ANSYS INP element order/IDs differ from exported mesh");
-        if (!SubTileAddElementPtr(
-                    &Opt -> TileStructure[Owner -> Tile].
-                        SubTiles[Owner -> SubTile],
-                    &Opt -> Elements.Items[I]))
-            OptFatal("Cannot assign element to body/tile/subtile");
+    if (!Opt -> MeshTopologyInitialized) {
+        for (I = 0; I < Opt -> Elements.Count; ++I) {
+            OptMeshOwnerStruct *Owner =
+                &Opt -> MeshOwners[I / Opt -> MeshSample];
+            if (Opt -> Elements.Items[I].Id != I + 1)
+                OptFatal("INP element order/IDs differ from exported mesh");
+            if (!SubTileAddElementPtr(
+                        &Opt -> TileStructure[Owner -> Tile].
+                            SubTiles[Owner -> SubTile],
+                        &Opt -> Elements.Items[I]))
+                OptFatal("Cannot assign persistent element ownership");
+        }
+        Opt -> MeshTopologyInitialized = TRUE;
     }
 
     /* ------------------------------------------------------------
@@ -3175,8 +3175,11 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     if (MS == NULL)
         return FALSE;
 
-    if (Mode == 0)
-        Opt -> MeshOwnerCount = 0;
+    if (Mode == 0) {
+        Opt -> MeshOwnerCursor = 0;
+        if (!Opt -> MeshTopologyInitialized)
+            Opt -> MeshOwnerCount = 0;
+    }
 
     for (B = 0; B < Opt -> BodyCount; ++B) {
         OptBodyStruct *Body = &Opt -> Bodies[B];
@@ -3571,6 +3574,20 @@ static int OptAppendMeshOwner(OptWorkflowStateStruct *Opt,
                               int Tile,
                               int SubTile)
 {
+    if (Opt -> MeshTopologyInitialized) {
+        if (Opt -> MeshOwnerCursor >= Opt -> MeshOwnerCount ||
+            Opt -> MeshOwners[Opt -> MeshOwnerCursor].Tile != Tile ||
+            Opt -> MeshOwners[Opt -> MeshOwnerCursor].SubTile != SubTile) {
+            fprintf(stderr,
+                    "Mesh ownership changed at patch %d (tile=%d, "
+                    "subtile=%d).\n",
+                    Opt -> MeshOwnerCursor, Tile, SubTile);
+            return FALSE;
+        }
+        ++Opt -> MeshOwnerCursor;
+        return TRUE;
+    }
+
     if (Opt -> MeshOwnerCount == Opt -> MeshOwnerCapacity) {
         int NewCapacity = Opt -> MeshOwnerCapacity == 0 ? 256 :
                           Opt -> MeshOwnerCapacity * 2;
@@ -3587,6 +3604,7 @@ static int OptAppendMeshOwner(OptWorkflowStateStruct *Opt,
     Opt -> MeshOwners[Opt -> MeshOwnerCount].Tile = Tile;
     Opt -> MeshOwners[Opt -> MeshOwnerCount].SubTile = SubTile;
     ++Opt -> MeshOwnerCount;
+    ++Opt -> MeshOwnerCursor;
     return TRUE;
 }
 
@@ -3692,6 +3710,12 @@ static int OptValidateMesh(OptWorkflowStateStruct *Opt)
         fprintf(stderr, "Generated mesh contains no owned geometry patches.\n");
         return FALSE;
     }
+    if (Opt -> MeshOwnerCursor != Opt -> MeshOwnerCount) {
+        fprintf(stderr,
+                "Mesh patch count changed: generated=%d, expected=%d.\n",
+                Opt -> MeshOwnerCursor, Opt -> MeshOwnerCount);
+        return FALSE;
+    }
     for (I = 0; I < Opt -> MeshOwnerCount; ++I)
         if (Opt -> MeshOwners[I].Tile < 0 ||
             Opt -> MeshOwners[I].Tile >= Opt -> TotalTiles ||
@@ -3723,7 +3747,15 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
 {
     FILE *F;
     char Line[OPT_MAX_LINE];
+    int NodeIndex = 0, ElementIndex = 0;
+    CagdBType FirstRead;
     enum { SEC_NONE, SEC_NODE, SEC_ELEMENT } CurrentSection = SEC_NONE;
+
+    if ((Opt -> Nodes.Count == 0) != (Opt -> Elements.Count == 0)) {
+        fprintf(stderr, "INP topology is only partially initialized.\n");
+        return 0;
+    }
+    FirstRead = Opt -> Nodes.Count == 0;
 
     F = fopen(INPPath, "r");
     if (F == NULL)
@@ -3764,27 +3796,82 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                 Node.X = (CagdRType)atof(Parts[1]);
                 Node.Y = (CagdRType)atof(Parts[2]);
                 Node.Z = (CagdRType)atof(Parts[3]);
-                if (!NodeArrayPush(&Opt -> Nodes, &Node)) {
+                if (FirstRead) {
+                    if (!NodeArrayPush(&Opt -> Nodes, &Node)) {
+                        fclose(F);
+                        return 0;
+                    }
+                }
+                else if (NodeIndex >= Opt -> Nodes.Count ||
+                         Opt -> Nodes.Items[NodeIndex].Id != Node.Id) {
+                    fprintf(stderr,
+                            "INP node topology changed at row %d.\n",
+                            NodeIndex + 1);
                     fclose(F);
                     return 0;
                 }
+                else {
+                    Opt -> Nodes.Items[NodeIndex].X = Node.X;
+                    Opt -> Nodes.Items[NodeIndex].Y = Node.Y;
+                    Opt -> Nodes.Items[NodeIndex].Z = Node.Z;
+                }
+                ++NodeIndex;
             }
         }
         else if (CurrentSection == SEC_ELEMENT) {
+            char *Tok;
+            int Col = 0;
             OptElementStruct Elem;
 
             IRIT_ZAP_MEM(&Elem, sizeof(Elem));
-            Elem.Id = atoi(P);
-            if (Elem.Id > 0) {
-                if (!ElementArrayPush(&Opt -> Elements, &Elem)) {
+            Tok = strtok(P, ",");
+            while (Tok != NULL && Col < 9) {
+                int Value = atoi(OptTrim(Tok));
+                if (Col == 0)
+                    Elem.Id = Value;
+                else
+                    Elem.NodeIds[Col - 1] = Value;
+                ++Col;
+                Tok = strtok(NULL, ",");
+            }
+            if (Elem.Id > 0 && Col == 9 && Tok == NULL) {
+                if (FirstRead) {
+                    if (!ElementArrayPush(&Opt -> Elements, &Elem)) {
+                        fclose(F);
+                        return 0;
+                    }
+                }
+                else if (ElementIndex >= Opt -> Elements.Count ||
+                         Opt -> Elements.Items[ElementIndex].Id != Elem.Id ||
+                         memcmp(Opt -> Elements.Items[ElementIndex].NodeIds,
+                                Elem.NodeIds,
+                                sizeof(Elem.NodeIds)) != 0) {
+                    fprintf(stderr,
+                            "INP element topology changed at row %d.\n",
+                            ElementIndex + 1);
                     fclose(F);
                     return 0;
                 }
+                ++ElementIndex;
+            }
+            else if (Elem.Id > 0) {
+                fprintf(stderr,
+                        "Expected one C3D8 element ID and eight node IDs.\n");
+                fclose(F);
+                return 0;
             }
         }
     }
 
     fclose(F);
+    if (NodeIndex != Opt -> Nodes.Count ||
+        ElementIndex != Opt -> Elements.Count) {
+        fprintf(stderr,
+                "INP topology count changed: nodes=%d/%d, elements=%d/%d.\n",
+                NodeIndex, Opt -> Nodes.Count,
+                ElementIndex, Opt -> Elements.Count);
+        return 0;
+    }
     return 1;
 }
 
@@ -4041,8 +4128,8 @@ static int InitTileStructure(OptWorkflowStateStruct *Opt)
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Clears analysis values from the previous solver result while          *
-* preserving the persistent tile/subtile topology, allocated element      *
-* pointer buffers, and thickness design state.                             *
+* preserving the persistent tile/subtile topology, element associations,  *
+* and thickness design state.                                              *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt: Active optimization workflow state.                               *
@@ -4068,19 +4155,7 @@ static void ClearTileAnalysisData(OptWorkflowStateStruct *Opt)
         for (S = 0; S < Tile -> SubTileCount; ++S) {
             OptSubTileStruct *SubTile = &Tile -> SubTiles[S];
 
-            /*
-             * The old entries point into the old Opt -> Elements array, which
-             * ProcessIterationData() has already freed.  Null the entries but
-             * KEEP the allocated pointer buffer and its capacity for reuse.
-             */
-            if (SubTile -> Elements != NULL && SubTile -> ElementCapacity > 0) {
-                IRIT_ZAP_MEM(SubTile -> Elements,
-                             (size_t) SubTile -> ElementCapacity *
-                                 sizeof(OptElementStruct *));
-            }
-            SubTile -> ElementCount = 0;
-
-            /* Preserve SubTile -> Thickness: it is design state. */
+            /* Preserve FE ownership and Thickness; both are persistent. */
             SubTile -> SED = 0.0;
             SubTile -> MaxSED = 0.0;
             SubTile -> Volume = 0.0;
