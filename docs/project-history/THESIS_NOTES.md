@@ -44,10 +44,11 @@ multi-iteration runtime experiment is still required.
 ## Known limitation: body-interface continuity
 
 The revised neighbour-matching algorithm represents continuous bodies as
-consecutive W ranges of one integer lattice when their U/V counts match. It can
-therefore equalize thicknesses across those logical W interfaces. Compatible
-parameter orientation and physical coincidence of the macro-body interfaces
-are assumed rather than geometrically verified.
+consecutive ranges on one selected U, V, or W axis of a global integer lattice.
+Counts on the other two axes must match. It can therefore equalize thicknesses
+across those logical interfaces. Compatible parameter orientation and physical
+coincidence of the macro-body interfaces are assumed rather than geometrically
+verified.
 
 This leaves three unproven properties:
 

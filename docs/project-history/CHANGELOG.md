@@ -3,6 +3,31 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-10-24 — Selectable U/V/W multi-body stack axis
+
+Purpose: allow the user to join continuous bodies along any one logical axis,
+while rejecting layouts that vary on more than the selected axis.
+
+Changes:
+
+- Added `body_stack_axis = u|v|w` to the public run configuration; `-1`
+  remains available programmatically for unambiguous inference.
+- Replaced the W-only body origin with a three-component logical grid origin.
+- Required counts on both non-stack axes to be identical across all bodies;
+  differences outside the selected axis are reported as configuration errors.
+- Changed CSV writing, ASAF updating, IRIT thickness lookup, geometry tagging,
+  and tile ownership naming to use canonical global flat-grid indices.
+- Kept `NeighbourMatchingB_V2()` body-independent over the global grid.
+
+Verification:
+
+- Visual C++ 2022 compilation succeeded with only existing external-header
+  warnings.
+- Synthetic U-, V-, and W-stacked two-body layouts each produced complete,
+  unique global index coverage; a non-selected-axis difference was detected.
+- `git diff --check` reported no whitespace errors.
+- No complete multi-body optimization run was performed.
+
 ## 2026-10-24 — Global-W multi-body neighbour matching
 
 Purpose: treat continuous macro bodies as consecutive W ranges of one logical

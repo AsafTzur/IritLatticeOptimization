@@ -17,6 +17,9 @@ skin_thickness = 0
 lattice_count_u = 2
 lattice_count_v = 5
 lattice_count_w = 20
+# For multiple bodies: u, v, or w. Bodies are ordered consecutively on this
+# axis; counts on the other two axes must be identical for every body.
+body_stack_axis = w
 
 initial_thickness = 0.188
 

@@ -147,8 +147,8 @@ typedef struct OptBodyStruct {
     char Name[OPT_MAX_NAME];
     IritTrivTVStruct *Map;      /* Owned copy, one trivariate per body. */
     int Counts[3];
-    int GridWOffset;            /* First W layer in the combined grid. */
-    int TileOffset, TileCount;
+    int GridOrigin[3];          /* Origin in the combined logical grid. */
+    int TileCount;
     CagdRType Min[3], Max[3];
 } OptBodyStruct;
 
@@ -228,6 +228,7 @@ struct OptWorkflowStateStruct {
     OptBodyStruct *Bodies;
     int BodyCount, TotalTiles;
     int GlobalCounts[3];
+    int StackAxis;
     OptMeshOwnerStruct *MeshOwners;
     int MeshOwnerCount, MeshOwnerCapacity, MeshOwnerCursor;
     CagdBType MeshTopologyInitialized;
@@ -340,6 +341,11 @@ static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 static int OptValidateMesh(OptWorkflowStateStruct *Opt);
 static int OptBodyForTile(const OptWorkflowStateStruct *Opt, int Tile);
+static int OptGlobalTileIndex(const OptWorkflowStateStruct *Opt,
+                              const OptBodyStruct *Body,
+                              int U,
+                              int V,
+                              int W);
 static void OptTagTile(IritPrsrObjectStruct *Obj,
                        int Tile,
                        int *GeomSub);
@@ -2208,8 +2214,8 @@ static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-*   Updates thicknesses using the direct ASAF SED-ratio rule while         *
-* preserving the physical body/W/V/U/subtile traversal order.              *
+*   Updates thicknesses using the direct ASAF SED-ratio rule in canonical  *
+* global tile/subtile order.                                                *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt:   Active optimization workflow state.                             *
@@ -2226,7 +2232,7 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
                                   int Iter)
 {
     int Counter = 0;
-    int B, U, V, W, L;
+    int T, L;
     CagdRType MaxThicknessChange = 0.0;
     CagdRType PowFactor = 0.35;
     CagdRType MaxChange = 0.3;
@@ -2244,69 +2250,50 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
     if (TargetSed <= 0.0)
         OptFatal("Invalid target SED value in DesignUpdateAsaf");
 
-    /*
-     * Use the original physical traversal explicitly:
-     *     body -> W -> V -> U -> SubTile.
-     *
-     * This keeps Prev[Counter], TileStructure and data_new.csv in the same
-     * unambiguous order, including multi-body runs.
-     */
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        OptBodyStruct *Body = &Opt -> Bodies[B];
+    for (T = 0; T < Opt -> TotalTiles; ++T) {
+        OptTileStruct *Tile = &Opt -> TileStructure[T];
 
-        for (W = 0; W < Body -> Counts[2]; ++W) {
-            for (V = 0; V < Body -> Counts[1]; ++V) {
-                for (U = 0; U < Body -> Counts[0]; ++U) {
-                    int TileIndex = Body -> TileOffset +
-                        U + Body -> Counts[0] * (V + Body -> Counts[1] * W);
-                    OptTileStruct *Tile = &Opt -> TileStructure[TileIndex];
+        for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
+            CagdRType TOld;
+            CagdRType TNew;
+            CagdRType SedFactor;
+            CagdRType Change;
+            CagdRType AbsThicknessChange;
 
-                    for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
-                        CagdRType TOld;
-                        CagdRType TNew;
-                        CagdRType SedFactor;
-                        CagdRType Change;
-                        CagdRType AbsThicknessChange;
+            if (Counter >= Count)
+                OptFatal("DesignUpdateAsaf thickness count mismatch");
 
-                        if (Counter >= Count)
-                            OptFatal(
-                                "DesignUpdateAsaf thickness count mismatch");
+            TOld = Prev[Counter];
+            SedFactor = Tile -> SubTiles[L].SED / TargetSed;
+            if (SedFactor < 0.0 || !isfinite(SedFactor))
+                SedFactor = 0.0;
 
-                        TOld = Prev[Counter];
-                        SedFactor = Tile -> SubTiles[L].SED / TargetSed;
-                        if (SedFactor < 0.0 || !isfinite(SedFactor))
-                            SedFactor = 0.0;
+            Change = pow(SedFactor, PowFactor);
 
-                        Change = pow(SedFactor, PowFactor);
+            if (Change > 1.0 + MaxChange)
+                Change = 1.0 + MaxChange;
+            if (Change < 1.0 - MaxChange)
+                Change = 1.0 - MaxChange;
 
-                        if (Change > 1.0 + MaxChange)
-                            Change = 1.0 + MaxChange;
-                        if (Change < 1.0 - MaxChange)
-                            Change = 1.0 - MaxChange;
+            TNew = TOld * Change;
 
-                        TNew = TOld * Change;
+            if (TNew < Opt -> Config.MinimumThickness)
+                TNew = Opt -> Config.MinimumThickness;
+            if (TNew > OPT_MAX_TILE_THICKNESS)
+                TNew = OPT_MAX_TILE_THICKNESS;
 
-                        if (TNew < Opt -> Config.MinimumThickness)
-                            TNew = Opt -> Config.MinimumThickness;
-                        if (TNew > OPT_MAX_TILE_THICKNESS)
-                            TNew = OPT_MAX_TILE_THICKNESS;
+            Tile -> SubTiles[L].Thickness = TNew;
 
-                        Tile -> SubTiles[L].Thickness = TNew;
+            AbsThicknessChange = fabs(TNew - TOld);
+            if (AbsThicknessChange > MaxThicknessChange)
+                MaxThicknessChange = AbsThicknessChange;
 
-                        AbsThicknessChange = fabs(TNew - TOld);
-                        if (AbsThicknessChange > MaxThicknessChange)
-                            MaxThicknessChange = AbsThicknessChange;
+            fprintf(stderr,
+                    "GTile=%d Sub=%d SED=%g Told=%g Tnew=%g Change=%g\n",
+                    T, L,
+                    Tile -> SubTiles[L].SED, TOld, TNew, Change);
 
-                        fprintf(stderr,
-                            "Body %d Tile[%d,%d,%d] GTile=%d Sub=%d "
-                            "SED=%g Told=%g Tnew=%g Change=%g\n",
-                            B + 1, U, V, W, TileIndex, L,
-                            Tile -> SubTiles[L].SED, TOld, TNew, Change);
-
-                        ++Counter;
-                    }
-                }
-            }
+            ++Counter;
         }
     }
 
@@ -2447,7 +2434,8 @@ static int CompareNeighbourEntries(const void *P1, const void *P2)
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Matches coincident arm-end thicknesses in one combined flat 3D grid.     *
-* Bodies are consecutive W ranges and are deliberately invisible here.     *
+* Bodies occupy consecutive ranges on the selected stack axis and are      *
+* deliberately invisible here.                                             *
 ***************************************************************************/
 static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
                                   const CagdRType Local[][3],
@@ -2677,7 +2665,7 @@ static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj)
 static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt)
 {
     FILE *F;
-    int B, U, V, W, L;
+    int T, L;
     int CounterFile = 0;
 
     F = fopen(Opt -> Config.DataNewFile, "w");
@@ -2686,28 +2674,14 @@ static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt)
 
     OptWriteCsvHeader(F, Opt);
 
-    /* Same ordering as DesignUpdateAsaf: body -> W -> V -> U -> SubTile. */
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        OptBodyStruct *Body = &Opt -> Bodies[B];
-
-        for (W = 0; W < Body -> Counts[2]; ++W) {
-            for (V = 0; V < Body -> Counts[1]; ++V) {
-                for (U = 0; U < Body -> Counts[0]; ++U) {
-                    int TileIndex = Body -> TileOffset +
-                        U + Body -> Counts[0] * (V + Body -> Counts[1] * W);
-
-                    for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
-                        fprintf(F,
-                            "%d,%.17g,%.17g\n",
-                            CounterFile + 1,
-                            (double) Opt -> TileStructure[TileIndex].
-                                SubTiles[L].Thickness,
-                            (double) Opt -> TileStructure[TileIndex].
-                                SubTiles[L].SED);
-                        ++CounterFile;
-                    }
-                }
-            }
+    for (T = 0; T < Opt -> TotalTiles; ++T) {
+        for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
+            fprintf(F,
+                "%d,%.17g,%.17g\n",
+                CounterFile + 1,
+                (double) Opt -> TileStructure[T].SubTiles[L].Thickness,
+                (double) Opt -> TileStructure[T].SubTiles[L].SED);
+            ++CounterFile;
         }
     }
 
@@ -2914,7 +2888,11 @@ static IritPrsrObjectStruct *PreProcessTile(
     if (Index < 0 || Index >= LclData -> Body -> TileCount)
         OptFatal("Tile callback index outside body grid");
 
-    BaseIndex = (LclData -> Body -> TileOffset + Index) * Arms;
+    BaseIndex = OptGlobalTileIndex(Opt,
+                                  LclData -> Body,
+                                  CBData -> TileIdxs[0],
+                                  CBData -> TileIdxs[1],
+                                  CBData -> TileIdxs[2]) * Arms;
     if (BaseIndex + Arms > Opt -> Legacy.Rows)
         OptFatal("Tile callback exceeds thickness data");
 
@@ -3433,7 +3411,6 @@ static int OptCopyBodyTVs(OptWorkflowStateStruct *Opt,
                             Body -> Counts[2];
                 if (TileCount <= 0 || TileCount > INT_MAX - *TileOffset)
                     return FALSE;
-                Body -> TileOffset = *TileOffset;
                 Body -> TileCount = (int) TileCount;
                 IritTrivTVDomain(Body -> Map,
                                  &Body -> Min[0], &Body -> Max[0],
@@ -3458,7 +3435,8 @@ static int OptLoadBodies(OptWorkflowStateStruct *Opt)
     int D;
     int B = 0;
     int TileOffset = 0;
-    int GridW = 0;
+    int Axis = -1;
+    int GridOffset = 0;
 
     IritPrsrSetFlattenObjects(FALSE);
     Objects = IritPrsrGetDataFiles(&FileName, 1, TRUE, FALSE);
@@ -3490,29 +3468,58 @@ static int OptLoadBodies(OptWorkflowStateStruct *Opt)
     }
     IritPrsrFreeObjectList(Objects);
 
-    Opt -> GlobalCounts[0] = Opt -> Bodies[0].Counts[0];
-    Opt -> GlobalCounts[1] = Opt -> Bodies[0].Counts[1];
+    Axis = Opt -> Run.BodyStackAxis;
+    for (D = 0; D < 3; ++D) {
+        int I;
+        CagdBType Differs = FALSE;
+
+        for (I = 1; I < Opt -> BodyCount; ++I)
+            if (Opt -> Bodies[I].Counts[D] != Opt -> Bodies[0].Counts[D]) {
+                Differs = TRUE;
+                break;
+            }
+        if (Differs) {
+            if (Opt -> Run.BodyStackAxis >= 0 &&
+                D != Opt -> Run.BodyStackAxis) {
+                fprintf(stderr,
+                        "Body counts differ on %c, but body_stack_axis is "
+                        "%c. Only the selected axis may vary.\n",
+                        "UVW"[D], "UVW"[Opt -> Run.BodyStackAxis]);
+                return FALSE;
+            }
+            if (Opt -> Run.BodyStackAxis < 0) {
+                if (Axis >= 0) {
+                    fprintf(stderr,
+                            "Multi-body counts differ in more than one axis "
+                            "(%c and %c).\n",
+                            "UVW"[Axis], "UVW"[D]);
+                    return FALSE;
+                }
+                Axis = D;
+            }
+        }
+    }
+    if (Opt -> BodyCount > 1 && Axis < 0) {
+        fprintf(stderr,
+                "Multi-body layout is ambiguous: exactly one of U/V/W "
+                "count lists must vary.\n");
+        return FALSE;
+    }
+    if (Axis < 0)
+        Axis = 2;
+    Opt -> StackAxis = Axis;
+
+    for (D = 0; D < 3; ++D)
+        Opt -> GlobalCounts[D] = D == Axis ? 0 : Opt -> Bodies[0].Counts[D];
     for (D = 0; D < Opt -> BodyCount; ++D) {
         OptBodyStruct *Body = &Opt -> Bodies[D];
 
-        if (Body -> Counts[0] != Opt -> GlobalCounts[0] ||
-            Body -> Counts[1] != Opt -> GlobalCounts[1]) {
-            fprintf(stderr,
-                    "Continuous body %d has U/V counts %d/%d; expected "
-                    "%d/%d. Only W may differ between bodies.\n",
-                    D + 1, Body -> Counts[0], Body -> Counts[1],
-                    Opt -> GlobalCounts[0], Opt -> GlobalCounts[1]);
+        Body -> GridOrigin[Axis] = GridOffset;
+        if (Body -> Counts[Axis] > INT_MAX - GridOffset)
             return FALSE;
-        }
-        Body -> GridWOffset = GridW;
-        if (Body -> TileOffset !=
-            Opt -> GlobalCounts[0] * Opt -> GlobalCounts[1] * GridW)
-            return FALSE;
-        if (Body -> Counts[2] > INT_MAX - GridW)
-            return FALSE;
-        GridW += Body -> Counts[2];
+        GridOffset += Body -> Counts[Axis];
     }
-    Opt -> GlobalCounts[2] = GridW;
+    Opt -> GlobalCounts[Axis] = GridOffset;
     Opt -> TotalTiles = TileOffset;
     if ((long long) Opt -> GlobalCounts[0] * Opt -> GlobalCounts[1] *
             Opt -> GlobalCounts[2] != Opt -> TotalTiles)
@@ -3526,10 +3533,11 @@ static int OptLoadBodies(OptWorkflowStateStruct *Opt)
 ***************************************************************************/
 static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 {
-    const OptBodyStruct *Body = &Opt -> Bodies[0];
     fprintf(F, "lattice_type,%d\n", Opt -> Run.LatticeType);
     fprintf(F, "lattice_counts,%d,%d,%d\n",
-            Body -> Counts[0], Body -> Counts[1], Body -> Counts[2]);
+            Opt -> GlobalCounts[0],
+            Opt -> GlobalCounts[1],
+            Opt -> GlobalCounts[2]);
     fprintf(F, "mesh_sample,%d\n", Opt -> Run.MeshSample);
     fprintf(F, "mesh_type,%d\n", OPT_LEGACY_MESH_TYPE);
 }
@@ -3552,8 +3560,8 @@ static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
         sscanf(Line, "mesh_type,%d %c", &MeshType, &Extra) != 1)
         return FALSE;
     return LatticeType == Opt -> Run.LatticeType &&
-           U == Opt -> Bodies[0].Counts[0] && V == Opt -> Bodies[0].Counts[1] &&
-           W == Opt -> Bodies[0].Counts[2] &&
+           U == Opt -> GlobalCounts[0] && V == Opt -> GlobalCounts[1] &&
+           W == Opt -> GlobalCounts[2] &&
            MeshSample == Opt -> Run.MeshSample &&
            MeshType == OPT_LEGACY_MESH_TYPE;
 }
@@ -3565,11 +3573,44 @@ static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 static int OptBodyForTile(const OptWorkflowStateStruct *Opt, int Tile)
 {
     int B;
-    for (B = 0; B < Opt -> BodyCount; ++B)
-        if (Tile >= Opt -> Bodies[B].TileOffset &&
-            Tile < Opt -> Bodies[B].TileOffset + Opt -> Bodies[B].TileCount)
+    int Coord[3];
+
+    Coord[0] = Tile % Opt -> GlobalCounts[0];
+    Tile /= Opt -> GlobalCounts[0];
+    Coord[1] = Tile % Opt -> GlobalCounts[1];
+    Coord[2] = Tile / Opt -> GlobalCounts[1];
+    for (B = 0; B < Opt -> BodyCount; ++B) {
+        const OptBodyStruct *Body = &Opt -> Bodies[B];
+        int Axis = Opt -> StackAxis;
+
+        if (Coord[Axis] >= Body -> GridOrigin[Axis] &&
+            Coord[Axis] < Body -> GridOrigin[Axis] + Body -> Counts[Axis])
             return B;
+    }
     return -1;
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Maps one body-local tile coordinate into the combined flat 3D grid.      *
+***************************************************************************/
+static int OptGlobalTileIndex(const OptWorkflowStateStruct *Opt,
+                              const OptBodyStruct *Body,
+                              int U,
+                              int V,
+                              int W)
+{
+    int Coord[3];
+
+    if (U < 0 || U >= Body -> Counts[0] ||
+        V < 0 || V >= Body -> Counts[1] ||
+        W < 0 || W >= Body -> Counts[2])
+        OptFatal("Body-local tile coordinate outside configured grid");
+    Coord[0] = Body -> GridOrigin[0] + U;
+    Coord[1] = Body -> GridOrigin[1] + V;
+    Coord[2] = Body -> GridOrigin[2] + W;
+    return Coord[0] + Opt -> GlobalCounts[0] *
+        (Coord[1] + Opt -> GlobalCounts[1] * Coord[2]);
 }
 
 /***************************************************************************
@@ -3718,9 +3759,11 @@ static IritPrsrObjectStruct *PostProcessTileBodies(
         (UserMicroLocalDataStruct *) CB -> CBFuncData;
     OptBodyStruct *Body = Local -> Body;
     int SubTile = 0;
-    int TileIndex = Body -> TileOffset + CB -> TileIdxs[0] +
-        Body -> Counts[0] *
-            (CB -> TileIdxs[1] + Body -> Counts[1] * CB -> TileIdxs[2]);
+    int TileIndex = OptGlobalTileIndex(Local -> Opt,
+                                       Body,
+                                       CB -> TileIdxs[0],
+                                       CB -> TileIdxs[1],
+                                       CB -> TileIdxs[2]);
     OptTagTile(Tile, TileIndex, &SubTile);
     return Tile;
 }
@@ -4465,6 +4508,7 @@ static void OptSetDefaultRunInputs(OptRunInputStruct *Run)
     Run -> LatticeCountU = -1;
     Run -> LatticeCountV = -1;
     Run -> LatticeCountW = -1;
+    Run -> BodyStackAxis = -1;
     Run -> InitialThickness = OPT_INVALID_REAL;
     Run -> MeshSample = -1;
     Run -> MaxIterations = -1;
@@ -4682,6 +4726,17 @@ static int InputHandler(const char *Key, const char *Value, void *Ctx)
         return OptParseInt(Value, &Run -> LatticeType);
     if (strcmp(Key, "skin_thickness") == 0)
         return OptParseReal(Value, &Run -> SkinThickness);
+    if (strcmp(Key, "body_stack_axis") == 0) {
+        if (OPT_STRICMP(Value, "u") == 0 || strcmp(Value, "0") == 0)
+            Run -> BodyStackAxis = 0;
+        else if (OPT_STRICMP(Value, "v") == 0 || strcmp(Value, "1") == 0)
+            Run -> BodyStackAxis = 1;
+        else if (OPT_STRICMP(Value, "w") == 0 || strcmp(Value, "2") == 0)
+            Run -> BodyStackAxis = 2;
+        else
+            return FALSE;
+        return TRUE;
+    }
     if (strcmp(Key, "lattice_count_u") == 0) {
         if (!OptParseCounts(Value,
                             &Run -> BodyCounts[0],
@@ -4843,6 +4898,10 @@ static CagdBType OptParseBool(const char *Value)
 static int ValidateInputs(const OptRunInputStruct *Run,
                           const OptConfigInputStruct *Cfg)
 {
+    if (Run -> BodyStackAxis < -1 || Run -> BodyStackAxis > 2) {
+        fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
+        return FALSE;
+    }
     if (OptIsBlank(Run -> MacroShapePath)) {
         fprintf(stderr, "Missing macro_shape_file in configuration file.\n");
         return FALSE;

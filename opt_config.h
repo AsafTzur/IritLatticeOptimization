@@ -14,6 +14,7 @@ typedef struct OptRunInputStruct {
     int LatticeCountU, LatticeCountV, LatticeCountW;
     int *BodyCounts[3];
     int BodyCountLengths[3];
+    int BodyStackAxis;          /* 0=U, 1=V, 2=W, -1=infer. */
     CagdRType InitialThickness;
     int MeshSample;
     int MaxIterations;

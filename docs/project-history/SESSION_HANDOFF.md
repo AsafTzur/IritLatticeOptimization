@@ -85,7 +85,7 @@ Fresh source inspection confirmed:
 - generated patches are tagged with global tile/subtile identity, and the
   ordered `MeshOwners` table maps flat finite elements back into that global
   structure;
-- design CSV traversal is already `body -> W -> V -> U -> subtile`;
+- the earlier design CSV traversal was `body -> W -> V -> U -> subtile`;
 - `NeighbourMatchingB()` still groups and matches entries separately for each
   body, so cross-body neighbours remain the main missing relationship.
 
@@ -121,17 +121,19 @@ Validation performed:
 Git baseline commit: `e94f17c` (`Establish IRIT optimization baseline`). The
 persistent-topology change is tracked separately from that baseline.
 
-The unified multi-body logical-grid refactor now uses the user's stated
-constraint: continuous bodies have identical U/V counts, may differ only in W,
-and appear in consecutive W order. Under that constraint, existing body-block
-storage already equals one flattened global `(U,V,sum(W))` grid.
+The unified multi-body logical-grid refactor now supports a user-selected U, V,
+or W stack axis through `body_stack_axis`. Bodies appear consecutively on that
+axis in ITD order; counts on the other two axes must match, and differences are
+configuration errors. The public API may use `-1` for inference only when one
+count list differs unambiguously.
 
-`NeighbourMatchingB_V2()` now traverses that global grid once, so logical
-interface members at consecutive body W boundaries are included in the same
-2/4/8 averaging groups. Body loading rejects mismatched U/V counts and verifies
-each body offset against its cumulative W origin. Compilation succeeded; a
-synthetic two-body indexing check also confirmed that the adjacent W+/W-
-members receive the same logical endpoint coordinate. A complete multi-body
-runtime validation remains outstanding. This change does not prove
-macro-interface coincidence, compatible orientation, geometry welding, merged
-nodes, or solver coupling.
+CSV serialization, ASAF updating, IRIT thickness lookup, geometry tagging, and
+tile ownership now share canonical global U-fast indices. This mapping is
+necessary for U and V stacking, where body-contiguous blocks are not global
+flat-grid order. `NeighbourMatchingB_V2()` remains one body-independent pass.
+
+Compilation succeeded. Synthetic U-, V-, and W-stacked layouts each produced
+complete unique index coverage, and an invalid non-selected-axis difference was
+detected. A complete multi-body runtime validation remains outstanding. This
+does not prove macro-interface coincidence, compatible orientation, geometry
+welding, merged nodes, or solver coupling.

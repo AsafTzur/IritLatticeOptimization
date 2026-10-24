@@ -92,3 +92,20 @@ order while allowing logical interface members to be matched. It assumes
 compatible parameter orientation and does not by itself establish geometric
 or finite-element continuity.
 
+Status update, 2026-10-24: superseded by D-007, which generalizes the same
+logical-grid model to a user-selected U, V, or W stack axis.
+
+## D-007 — Allow exactly one selected multi-body stack axis
+
+Date: 2026-10-24
+
+Decision: Let the user select U, V, or W through `body_stack_axis`. Bodies are
+placed consecutively on that logical axis in ITD order. Counts on the other two
+axes must be identical; any difference there is an error. If the public API
+leaves the axis at `-1`, infer it only when exactly one count list differs.
+
+Reason: A canonical global 3D structure and flattening should be independent of
+how IRIT divides the macro geometry. Explicit body-local-to-global indexing is
+required for U and V stacking because body-contiguous storage is equivalent to
+global U-fast flattening only for W stacking.
+
