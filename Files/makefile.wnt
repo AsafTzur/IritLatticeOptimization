@@ -1,0 +1,239 @@
+#
+# This make file is for the Test utility for Windows NT
+#
+#				Gershon Elber, Jan 2000
+#
+
+# Includes generic definitions.
+include ..\makeflag.wnt
+
+OBJS =	test.$(IRIT_OBJ_PF) 
+
+test$(IRIT_EXE_PF).exe: $(OBJS)
+	$(IRITCONLINK) -out:$@ $(OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+
+testAll: \
+	testAttr$(IRIT_EXE_PF).exe \
+	testCrvPtDist$(IRIT_EXE_PF).exe \
+	testGauss$(IRIT_EXE_PF).exe \
+	testImage$(IRIT_EXE_PF).exe \
+	testFFDCB$(IRIT_EXE_PF).exe \
+	testMS$(IRIT_EXE_PF).exe \
+	testMS1CT$(IRIT_EXE_PF).exe \
+	testMS2CT$(IRIT_EXE_PF).exe \
+	testMS2$(IRIT_EXE_PF).exe \
+	testMS3$(IRIT_EXE_PF).exe \
+	testMS4$(IRIT_EXE_PF).exe \
+	testMS5$(IRIT_EXE_PF).exe \
+	testMS6$(IRIT_EXE_PF).exe \
+	testMS7$(IRIT_EXE_PF).exe \
+	testMSTile$(IRIT_EXE_PF).exe \
+	testMSTile1$(IRIT_EXE_PF).exe \
+	testMSTile2$(IRIT_EXE_PF).exe \
+	testMSWing$(IRIT_EXE_PF).exe \
+	testMatchCrvs$(IRIT_EXE_PF).exe \
+	testMdlBool$(IRIT_EXE_PF).exe \
+	testMemLeak$(IRIT_EXE_PF).exe \
+	testMemLeak2$(IRIT_EXE_PF).exe \
+	testMin$(IRIT_EXE_PF).exe \
+	testPoly$(IRIT_EXE_PF).exe \
+	testRocketFuel$(IRIT_EXE_PF).exe \
+	testRocketFuel2$(IRIT_EXE_PF).exe \
+	testSrfPtDist$(IRIT_EXE_PF).exe \
+	testSrfPtDist2$(IRIT_EXE_PF).exe \
+	testTV$(IRIT_EXE_PF).exe \
+	testTVMdl$(IRIT_EXE_PF).exe \
+	testTVSrf$(IRIT_EXE_PF).exe \
+	testTopo$(IRIT_EXE_PF).exe \
+	testVBoolSum$(IRIT_EXE_PF).exe \
+	testVModelBlend$(IRIT_EXE_PF).exe \
+	testVModelSlice$(IRIT_EXE_PF).exe \
+	testVRepSrfinTV$(IRIT_EXE_PF).exe
+
+clean:
+	-rm *.map *.bak *.old *.sym *obj *.exe *.exe.manifest \
+	    *.map *.pdb *.ilk
+
+ATTR_OBJS = testAttr.$(IRIT_OBJ_PF) 
+testAttr$(IRIT_EXE_PF).exe: $(ATTR_OBJS)
+	$(IRITCONLINK) -out:$@ $(ATTR_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+CRV_PT_DIST_OBJS = testCrvPtDist.$(IRIT_OBJ_PF) 
+testCrvPtDist$(IRIT_EXE_PF).exe: $(CRV_PT_DIST_OBJS)
+	$(IRITCONLINK) -out:$@ $(CRV_PT_DIST_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+GAUSS_OBJS = testGauss.$(IRIT_OBJ_PF) 
+testGauss$(IRIT_EXE_PF).exe: $(GAUSS_OBJS)
+	$(IRITCONLINK) -out:$@ $(GAUSS_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+IMAGE_OBJS = testImage.$(IRIT_OBJ_PF) 
+testImage$(IRIT_EXE_PF).exe: $(IMAGE_OBJS)
+	$(IRITCONLINK) -out:$@ $(IMAGE_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+IMAGE_OBJS = testFFDCB.$(IRIT_OBJ_PF) 
+testFFDCB$(IRIT_EXE_PF).exe: $(IMAGE_OBJS)
+	$(IRITCONLINK) -out:$@ $(IMAGE_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS_OBJS = testMS.$(IRIT_OBJ_PF) 
+testMS$(IRIT_EXE_PF).exe: $(MS_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS1CT_OBJS = testMS1CT.$(IRIT_OBJ_PF) 
+testMS1CT$(IRIT_EXE_PF).exe: $(MS1CT_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS1CT_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS2CT_OBJS = testMS2CT.$(IRIT_OBJ_PF) 
+testMS2CT$(IRIT_EXE_PF).exe: $(MS2CT_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS2CT_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS2_OBJS = testMS2.$(IRIT_OBJ_PF) 
+testMS2$(IRIT_EXE_PF).exe: $(MS2_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS2_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS3_OBJS = testMS3.$(IRIT_OBJ_PF) 
+testMS3$(IRIT_EXE_PF).exe: $(MS3_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS3_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS4_OBJS = testMS4.$(IRIT_OBJ_PF) 
+testMS4$(IRIT_EXE_PF).exe: $(MS4_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS4_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS5_OBJS = testMS5.$(IRIT_OBJ_PF) 
+testMS5$(IRIT_EXE_PF).exe: $(MS5_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS5_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS6_OBJS = testMS6.$(IRIT_OBJ_PF) 
+testMS6$(IRIT_EXE_PF).exe: $(MS6_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS6_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MS7_OBJS = testMS7.$(IRIT_OBJ_PF) 
+testMS7$(IRIT_EXE_PF).exe: $(MS7_OBJS)
+	$(IRITCONLINK) -out:$@ $(MS7_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MSTILE_OBJS =testMSTile.$(IRIT_OBJ_PF) 
+testMSTile$(IRIT_EXE_PF).exe: $(MSTILE_OBJS)
+	$(IRITCONLINK) -out:$@ $(MSTILE_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MSTILE1_OBJS = testMSTile1.$(IRIT_OBJ_PF) 
+testMSTile1$(IRIT_EXE_PF).exe: $(MSTILE1_OBJS)
+	$(IRITCONLINK) -out:$@ $(MSTILE1_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MSTILE2_OBJS = testMSTile2.$(IRIT_OBJ_PF) 
+testMSTile2$(IRIT_EXE_PF).exe: $(MSTILE2_OBJS)
+	$(IRITCONLINK) -out:$@ $(MSTILE2_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MSWING_OBJS = testMSWing.$(IRIT_OBJ_PF) 
+testMSWing$(IRIT_EXE_PF).exe: $(MSWING_OBJS)
+	$(IRITCONLINK) -out:$@ $(MSWING_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MATCH_CRVS_OBJS = testMatchCrvs.$(IRIT_OBJ_PF) 
+testMatchCrvs$(IRIT_EXE_PF).exe: $(MATCH_CRVS_OBJS)
+	$(IRITCONLINK) -out:$@ $(MATCH_CRVS_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MDL_BOOL_OBJS =	testMdlBool.$(IRIT_OBJ_PF) 
+testMdlBool$(IRIT_EXE_PF).exe: $(MDL_BOOL_OBJS)
+	$(IRITCONLINK) -out:$@ $(MDL_BOOL_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MEM_LEAK_OBJS =	testMemLeak.$(IRIT_OBJ_PF) 
+testMemLeak$(IRIT_EXE_PF).exe: $(MEM_LEAK_OBJSOBJS)
+	$(IRITCONLINK) -out:$@ $(MEM_LEAK_OBJSOBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MEM_LEAK2_OBJS = testMemLeak2.$(IRIT_OBJ_PF) 
+testMemLeak2$(IRIT_EXE_PF).exe: $(MEM_LEAK2_OBJS)
+	$(IRITCONLINK) -out:$@ $(MEM_LEAK2_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+MIN_OBJS = testMin.$(IRIT_OBJ_PF) 
+testMin$(IRIT_EXE_PF).exe: $(MIN_OBJS)
+	$(IRITCONLINK) -out:$@ $(MIN_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+POLY_OBJS = testPoly.$(IRIT_OBJ_PF) 
+testPoly$(IRIT_EXE_PF).exe: $(POLY_OBJS)
+	$(IRITCONLINK) -out:$@ $(POLY_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+ROCKET_FUEL_OBJS = testRocketFuel.$(IRIT_OBJ_PF) 
+testRocketFuel$(IRIT_EXE_PF).exe: $(ROCKET_FUEL_OBJS)
+	$(IRITCONLINK) -out:$@ $(ROCKET_FUEL_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+ROCKET_FUEL2_OBJS = testRocketFuel2.$(IRIT_OBJ_PF) 
+testRocketFuel2$(IRIT_EXE_PF).exe: $(ROCKET_FUEL2_OBJS)
+	$(IRITCONLINK) -out:$@ $(ROCKET_FUEL2_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+SRF_PT_DIST_OBJS = testSrfPtDist.$(IRIT_OBJ_PF) 
+testSrfPtDist$(IRIT_EXE_PF).exe: $(SRF_PT_DIST_OBJS)
+	$(IRITCONLINK) -out:$@ $(SRF_PT_DIST_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+SRF_PT_DIST2_OBJS = testSrfPtDist2.$(IRIT_OBJ_PF) 
+testSrfPtDist2$(IRIT_EXE_PF).exe: $(SRF_PT_DIST2_OBJS)
+	$(IRITCONLINK) -out:$@ $(SRF_PT_DIST_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+TV_OBJS = testTV.$(IRIT_OBJ_PF) 
+testTV$(IRIT_EXE_PF).exe: $(TV_OBJS)
+	$(IRITCONLINK) -out:$@ $(TV_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+TV_MDL_OBJS = testTVMdl.$(IRIT_OBJ_PF) 
+testTVMdl$(IRIT_EXE_PF).exe: $(TV_MDL_OBJS)
+	$(IRITCONLINK) -out:$@ $(TV_MDL_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+TV_SRF_OBJS = testTVSrf.$(IRIT_OBJ_PF) 
+testTVSrf$(IRIT_EXE_PF).exe: $(TV_SRF_OBJS)
+	$(IRITCONLINK) -out:$@ $(TV_SRF_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+TOPO_OBJS = testTopo.$(IRIT_OBJ_PF) 
+testTopo$(IRIT_EXE_PF).exe: $(TOPO_OBJS)
+	$(IRITCONLINK) -out:$@ $(TOPO_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+VBOOLSUM_OBJS = testVBoolSum.$(IRIT_OBJ_PF) 
+testVBoolSum$(IRIT_EXE_PF).exe: $(VBOOLSUM_OBJS)
+	$(IRITCONLINK) -out:$@ $(VBOOLSUM_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+VMODEL_BLEND_OBJS = testVModelBlend.$(IRIT_OBJ_PF) 
+testVModelBlend$(IRIT_EXE_PF).exe: $(VMODEL_BLEND_OBJS)
+	$(IRITCONLINK) -out:$@ $(VMODEL_BLEND_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+VMODEL_SLICE_OBJS = testVModelSlice.$(IRIT_OBJ_PF) 
+testVModelSlice$(IRIT_EXE_PF).exe: $(VMODEL_SLICE_OBJS)
+	$(IRITCONLINK) -out:$@ $(VMODEL_SLICE_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+VREP_SRF_in_TV_OBJS = testVRepSrfinTV.$(IRIT_OBJ_PF) 
+testVRepSrfinTV$(IRIT_EXE_PF).exe: $(VREP_SRF_in_TV_OBJS)
+	$(IRITCONLINK) -out:$@ $(VREP_SRF_in_TV_OBJS) $(IRIT_LIBS) $(IRIT_MORE_LIBS) $(W32CONMTLIBS)
+	$(IRITMANIFEST) -manifest $@.manifest -outputresource:$@;1
+
+# Dependencies starts here - do not touch, generated automatically.

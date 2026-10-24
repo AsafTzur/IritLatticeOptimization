@@ -1,0 +1,55 @@
+# =============================================================
+# Unified Optimization Configuration
+# Edit run settings first, then optimization settings, then the root folder.
+# Format: key = value
+# =============================================================
+
+# -------------------------------------------------------------
+# RUN DEFINITIONS
+# -------------------------------------------------------------
+macro_shape_file = DefMap.itd
+# 1 = ANSYS, 2 = CalculiX
+simulation_type = 2
+# Lattice Type = Tile type, 0 = 3Dcross, 1=Smooth 3DCross, 2=DiagonalTile
+lattice_type = 1
+# Skin thickness for lattice type 0: 0 disables skin; maximum is 0.5.
+skin_thickness = 0
+lattice_count_u = 2
+lattice_count_v = 5
+lattice_count_w = 20
+
+initial_thickness = 0.188
+
+mesh_sample = 6
+
+max_iterations = 25
+convergence_iterations = 3
+thickness_change_tolerance = 0.0025
+
+target_volume_fraction = 0.40
+target_volume_fraction_tol = 0.1
+
+optimization_algorithm = 3
+# -------------------------------------------------------------
+# OPTIMIZATION / MODEL CONFIGURATION
+# -------------------------------------------------------------
+scale = 0.015
+density = 2700
+youngs_modulus = 6.9e10
+poisson_ratio = 0.33
+sed_value = 0.15
+
+minimum_thickness = 0.001
+safety_factor_sed = 1.1
+remove_thin_tiles = false
+
+# -------------------------------------------------------------
+# ROOT DIRECTORY
+# -------------------------------------------------------------
+# Defaults are derived below this folder:
+#   TEMP_SET\<macro_shape_file>, optimized_geo.inp, generated data and output files
+#   ANSYS_SET\WB2.wbpj and ANSYS_SET\RunWB.wbjn
+root_folder = C:\IRIT\ASAF\RUN
+
+# Optional override when ANSYS is installed elsewhere:
+# ansys_exe = C:\Program Files\ANSYS Inc\v222\Framework\bin\Win64\RunWB2.exe

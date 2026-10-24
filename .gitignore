@@ -1,0 +1,41 @@
+# Local compiler and linker output.
+.build/
+*.obj
+*.o
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.exp
+
+# Visual Studio per-user state and generated directories.
+.vs/
+Debug/
+Release/
+x64/
+x86/
+*.user
+*.suo
+
+# CalculiX and ANSYS generated analysis output.
+*.dat
+*.frd
+*.sta
+*.cvg
+*.12d
+*.rout
+*.err
+*.out
+*_ccx.log
+*.ccx.tmp
+
+# Temporary and editor files.
+*.tmp
+*.bak
+*.swp
+*~
+
+# Keep research inputs, configurations, documentation, source references,
+# and deliberate historical copies tracked unless explicitly excluded later.
+
