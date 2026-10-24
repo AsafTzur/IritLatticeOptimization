@@ -43,10 +43,11 @@ multi-iteration runtime experiment is still required.
 
 ## Known limitation: body-interface continuity
 
-The current neighbour-matching algorithm represents interface locations in a
-body-local integer lattice coordinate system and sorts each body's entries
-separately. It therefore equalizes coincident member thicknesses inside a body
-but cannot recognize an interface point belonging to another body.
+The revised neighbour-matching algorithm represents continuous bodies as
+consecutive W ranges of one integer lattice when their U/V counts match. It can
+therefore equalize thicknesses across those logical W interfaces. Compatible
+parameter orientation and physical coincidence of the macro-body interfaces
+are assumed rather than geometrically verified.
 
 This leaves three unproven properties:
 
@@ -54,8 +55,8 @@ This leaves three unproven properties:
 2. Tangent or derivative continuity at the interface.
 3. Finite-element load transfer through a conforming or coupled interface.
 
-This limitation is a suitable thesis motivation for a world-space cross-body
-interface correspondence and coupling method.
+This limitation is a suitable thesis motivation for validating the logical
+correspondence in world space and adding a geometric/solver coupling method.
 
 ## Proposed interface-continuity research task
 

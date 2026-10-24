@@ -147,6 +147,7 @@ typedef struct OptBodyStruct {
     char Name[OPT_MAX_NAME];
     IritTrivTVStruct *Map;      /* Owned copy, one trivariate per body. */
     int Counts[3];
+    int GridWOffset;            /* First W layer in the combined grid. */
     int TileOffset, TileCount;
     CagdRType Min[3], Max[3];
 } OptBodyStruct;
@@ -226,6 +227,7 @@ struct OptWorkflowStateStruct {
 
     OptBodyStruct *Bodies;
     int BodyCount, TotalTiles;
+    int GlobalCounts[3];
     OptMeshOwnerStruct *MeshOwners;
     int MeshOwnerCount, MeshOwnerCapacity, MeshOwnerCursor;
     CagdBType MeshTopologyInitialized;
@@ -296,10 +298,10 @@ static CagdRType ComputeMaxThicknessChange(const OptWorkflowStateStruct *Opt,
                                            int Count);
 static void NeighbourMatching(OptWorkflowStateStruct *Opt);
 static int CompareNeighbourEntries(const void *P1, const void *P2);
-static void NeighbourMatchingB(OptWorkflowStateStruct *Opt,
-                               const CagdRType Local[][3],
-                               int LocalCount,
-                               int LDefOffset);
+static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
+                                  const CagdRType Local[][3],
+                                  int LocalCount,
+                                  int LDefOffset);
 static CagdRType OptDesignMoveFraction(int Iter);
 static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt);
 static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj);
@@ -2403,16 +2405,16 @@ static void NeighbourMatching(OptWorkflowStateStruct *Opt)
 
     switch (Opt -> Run.LatticeType) {
         case 0:
-            NeighbourMatchingB(Opt, Local0, 6, 0);
+            NeighbourMatchingB_V2(Opt, Local0, 6, 0);
             break;
         case 1:
-            NeighbourMatchingB(Opt, Local01, 6, 0);
+            NeighbourMatchingB_V2(Opt, Local01, 6, 0);
             break;
         case 2:
-            NeighbourMatchingB(Opt, Local2, 8, 8);
+            NeighbourMatchingB_V2(Opt, Local2, 8, 8);
             break;
         default:
-            NeighbourMatchingB(Opt, Local0, 6, 0);
+            NeighbourMatchingB_V2(Opt, Local0, 6, 0);
             break;
     }
 }
@@ -2444,16 +2446,20 @@ static int CompareNeighbourEntries(const void *P1, const void *P2)
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Matches coincident arm-end thicknesses independently within each body.   *
+* Matches coincident arm-end thicknesses in one combined flat 3D grid.     *
+* Bodies are consecutive W ranges and are deliberately invisible here.     *
 ***************************************************************************/
-static void NeighbourMatchingB(OptWorkflowStateStruct *Opt,
-                               const CagdRType Local[][3],
-                               int LocalCount,
-                               int LDefOffset)
+static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
+                                  const CagdRType Local[][3],
+                                  int LocalCount,
+                                  int LDefOffset)
 {
-    int B, U, V, W, L, I, J, G;
+    int U, V, W, L, I, J, G;
     int X = 0;
     int Total = Opt -> TotalTiles * LocalCount;
+    int CountU = Opt -> GlobalCounts[0];
+    int CountV = Opt -> GlobalCounts[1];
+    int CountW = Opt -> GlobalCounts[2];
     OptNeighbourEntryStruct *Entries;
 
     Entries = (OptNeighbourEntryStruct *)
@@ -2461,61 +2467,53 @@ static void NeighbourMatchingB(OptWorkflowStateStruct *Opt,
     if (Entries == NULL)
         OptFatal("Cannot allocate neighbour data");
 
-    /* Match exact integer-grid interfaces separately within each body. */
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        int Start = X;
-        OptBodyStruct *Body = &Opt -> Bodies[B];
+    for (W = 0; W < CountW; ++W) {
+        for (V = 0; V < CountV; ++V) {
+            for (U = 0; U < CountU; ++U) {
+                int Tile = U + CountU * (V + CountV * W);
 
-        for (W = 0; W < Body -> Counts[2]; ++W) {
-            for (V = 0; V < Body -> Counts[1]; ++V) {
-                for (U = 0; U < Body -> Counts[0]; ++U) {
-                    for (L = 0; L < LocalCount; ++L) {
-                        int Tile = Body -> TileOffset + U +
-                            Body -> Counts[0] *
-                            (V + Body -> Counts[1] * W);
-
-                        Entries[X].LinearId = Tile * LocalCount + L;
-                        Entries[X].X = U + Local[L][0];
-                        Entries[X].Y = V + Local[L][1];
-                        Entries[X].Z = W + Local[L][2];
-                        ++X;
-                    }
+                for (L = 0; L < LocalCount; ++L) {
+                    Entries[X].LinearId = Tile * LocalCount + L;
+                    Entries[X].X = U + Local[L][0];
+                    Entries[X].Y = V + Local[L][1];
+                    Entries[X].Z = W + Local[L][2];
+                    ++X;
                 }
             }
         }
+    }
 
-        qsort(Entries + Start,
-              X - Start,
-              sizeof(*Entries),
-              CompareNeighbourEntries);
+    if (X != Total)
+        OptFatal("Combined neighbour grid does not match TotalTiles");
 
-        for (I = Start; I < X; I = J) {
-            CagdRType Avg = 0.0;
+    qsort(Entries, X, sizeof(*Entries), CompareNeighbourEntries);
 
-            for (J = I + 1;
-                 J < X &&
-                 CompareNeighbourEntries(&Entries[I], &Entries[J]) == 0;
-                 ++J)
-                ;
+    for (I = 0; I < X; I = J) {
+        CagdRType Avg = 0.0;
 
-            for (G = I; G < J; ++G) {
-                int Id = Entries[G].LinearId;
-                OptSubTileStruct *SubTile =
-                    &Opt -> TileStructure[Id / LocalCount].SubTiles[
-                        Id % LocalCount + LDefOffset];
+        for (J = I + 1;
+             J < X &&
+             CompareNeighbourEntries(&Entries[I], &Entries[J]) == 0;
+             ++J)
+            ;
 
-                Avg += SubTile -> Thickness;
-            }
+        for (G = I; G < J; ++G) {
+            int Id = Entries[G].LinearId;
+            OptSubTileStruct *SubTile =
+                &Opt -> TileStructure[Id / LocalCount].SubTiles[
+                    Id % LocalCount + LDefOffset];
 
-            Avg /= J - I;
-            for (G = I; G < J; ++G) {
-                int Id = Entries[G].LinearId;
-                OptSubTileStruct *SubTile =
-                    &Opt -> TileStructure[Id / LocalCount].SubTiles[
-                        Id % LocalCount + LDefOffset];
+            Avg += SubTile -> Thickness;
+        }
 
-                SubTile -> Thickness = Avg;
-            }
+        Avg /= J - I;
+        for (G = I; G < J; ++G) {
+            int Id = Entries[G].LinearId;
+            OptSubTileStruct *SubTile =
+                &Opt -> TileStructure[Id / LocalCount].SubTiles[
+                    Id % LocalCount + LDefOffset];
+
+            SubTile -> Thickness = Avg;
         }
     }
 
@@ -3460,6 +3458,7 @@ static int OptLoadBodies(OptWorkflowStateStruct *Opt)
     int D;
     int B = 0;
     int TileOffset = 0;
+    int GridW = 0;
 
     IritPrsrSetFlattenObjects(FALSE);
     Objects = IritPrsrGetDataFiles(&FileName, 1, TRUE, FALSE);
@@ -3490,7 +3489,34 @@ static int OptLoadBodies(OptWorkflowStateStruct *Opt)
         return FALSE;
     }
     IritPrsrFreeObjectList(Objects);
+
+    Opt -> GlobalCounts[0] = Opt -> Bodies[0].Counts[0];
+    Opt -> GlobalCounts[1] = Opt -> Bodies[0].Counts[1];
+    for (D = 0; D < Opt -> BodyCount; ++D) {
+        OptBodyStruct *Body = &Opt -> Bodies[D];
+
+        if (Body -> Counts[0] != Opt -> GlobalCounts[0] ||
+            Body -> Counts[1] != Opt -> GlobalCounts[1]) {
+            fprintf(stderr,
+                    "Continuous body %d has U/V counts %d/%d; expected "
+                    "%d/%d. Only W may differ between bodies.\n",
+                    D + 1, Body -> Counts[0], Body -> Counts[1],
+                    Opt -> GlobalCounts[0], Opt -> GlobalCounts[1]);
+            return FALSE;
+        }
+        Body -> GridWOffset = GridW;
+        if (Body -> TileOffset !=
+            Opt -> GlobalCounts[0] * Opt -> GlobalCounts[1] * GridW)
+            return FALSE;
+        if (Body -> Counts[2] > INT_MAX - GridW)
+            return FALSE;
+        GridW += Body -> Counts[2];
+    }
+    Opt -> GlobalCounts[2] = GridW;
     Opt -> TotalTiles = TileOffset;
+    if ((long long) Opt -> GlobalCounts[0] * Opt -> GlobalCounts[1] *
+            Opt -> GlobalCounts[2] != Opt -> TotalTiles)
+        return FALSE;
     return B == Opt -> BodyCount;
 }
 

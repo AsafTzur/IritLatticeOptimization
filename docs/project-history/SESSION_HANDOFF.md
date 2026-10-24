@@ -121,7 +121,17 @@ Validation performed:
 Git baseline commit: `e94f17c` (`Establish IRIT optimization baseline`). The
 persistent-topology change is tracked separately from that baseline.
 
-The unified multi-body logical-grid refactor remains separate work. Current
-body-block flattening does not yet encode a combined 3D placement, so
-`NeighbourMatchingB()` must not simply have its body boundary removed until
-that placement is represented.
+The unified multi-body logical-grid refactor now uses the user's stated
+constraint: continuous bodies have identical U/V counts, may differ only in W,
+and appear in consecutive W order. Under that constraint, existing body-block
+storage already equals one flattened global `(U,V,sum(W))` grid.
+
+`NeighbourMatchingB_V2()` now traverses that global grid once, so logical
+interface members at consecutive body W boundaries are included in the same
+2/4/8 averaging groups. Body loading rejects mismatched U/V counts and verifies
+each body offset against its cumulative W origin. Compilation succeeded; a
+synthetic two-body indexing check also confirmed that the adjacent W+/W-
+members receive the same logical endpoint coordinate. A complete multi-body
+runtime validation remains outstanding. This change does not prove
+macro-interface coincidence, compatible orientation, geometry welding, merged
+nodes, or solver coupling.

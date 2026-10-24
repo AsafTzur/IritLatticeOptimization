@@ -33,6 +33,10 @@ Reason: `NeighbourMatchingB()` processes each body independently. No current
 step creates cross-body adjacency, welds geometry, merges mesh nodes, or adds
 solver coupling.
 
+Status update, 2026-10-24: the body-local design-matching portion was
+superseded by D-006. The absence of a geometry weld, merged mesh nodes, or
+solver coupling remains true.
+
 ## D-004 — Keep continuity requirements separate
 
 Date: 2026-10-24
@@ -71,4 +75,20 @@ IDs, C3D8 connectivity, patch order, or ownership. Preserving this invariant
 removes redundant topology reconstruction and prevents silent result-mapping
 errors. A detected topology change aborts processing rather than leaving stale
 pointers active.
+
+## D-006 — Model continuous bodies as consecutive global W ranges
+
+Date: 2026-10-24
+
+Decision: Require identical U/V lattice counts for all continuous bodies,
+allow W counts to differ, and interpret body order as consecutive ranges in a
+single global W direction. Run neighbour matching on the resulting flattened
+global grid without body boundaries.
+
+Reason: With U-fast storage, concatenating body blocks of size
+`U * V * BodyW` is exactly the flattening of one grid sized
+`U * V * sum(BodyW)`. This preserves the established tile structure and CSV
+order while allowing logical interface members to be matched. It assumes
+compatible parameter orientation and does not by itself establish geometric
+or finite-element continuity.
 

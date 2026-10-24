@@ -69,6 +69,8 @@ and do not imply that cross-chat continuity is complete.
 ## Current critical limitation
 
 Multi-body generation processes each macro body separately. The present
-neighbour-thickness matching operates independently inside each body and does
-not guarantee geometric or finite-element continuity across body interfaces.
+global-grid neighbour-thickness matching crosses consecutive logical W
+interfaces when all bodies share U/V counts and compatible parameter
+orientation. This design matching still does not guarantee geometric or
+finite-element continuity across body interfaces.
 

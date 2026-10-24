@@ -3,6 +3,33 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-10-24 — Global-W multi-body neighbour matching
+
+Purpose: treat continuous macro bodies as consecutive W ranges of one logical
+3D lattice so thickness matching uses the same flattened structure everywhere.
+
+Changes:
+
+- Added global U/V/W lattice counts to the workflow state.
+- Required every continuous body to use identical U and V tile counts; W is
+  allowed to differ and global W is their sum.
+- Recorded each body's cumulative logical W origin and verified that its
+  existing flat `TileOffset` equals the corresponding global-grid offset.
+- Replaced body-local `NeighbourMatchingB()` with
+  `NeighbourMatchingB_V2()`, which traverses and sorts one flattened global
+  `(U,V,W)` grid and therefore averages members across consecutive body W
+  interfaces.
+
+Verification:
+
+- Visual C++ 2022 compilation succeeded. Only existing IRIT/Windows header
+  warnings were emitted.
+- A synthetic two-body layout (`U=2`, `V=1`, body W counts `1,2`) verified the
+  cumulative offsets, six-tile global flattening, and shared logical coordinate
+  of the first body's W+ and second body's W- interface members.
+- `git diff --check` reported no whitespace errors.
+- No complete multi-body optimization run was performed.
+
 ## 2026-10-24 — Persistent finite-element topology
 
 Purpose: retain the optimization model's node, element, and element-to-subtile
