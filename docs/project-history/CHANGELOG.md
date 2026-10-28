@@ -3,6 +3,25 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-10-28 — Configurable microstructure FFD mode
+
+Purpose: allow the run configuration to select the existing approximate/global
+FFD microstructure path without recompiling `test.c`.
+
+Changes:
+
+- Added `use_microstructure_ffd = true|false` to `opt_config.txt` and
+  `OptRunInputStruct`.
+- `GenerateMicroStructures()` now reads the setting instead of using a local
+  hard-coded `UseMicroStructFFD` constant.
+- Defaulted the setting to `true`, preserving the currently selected behavior.
+- Kept `UseFFDTileAggregation` internal and unchanged.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` successfully with `/W4`; only the existing
+  nameless-union warnings from IRIT's `mvar_lib.h` were emitted.
+
 ## 2026-10-28 — Unified-lattice multi-body IRIT generation
 
 Purpose: support macro-shape files containing multiple trivariates without

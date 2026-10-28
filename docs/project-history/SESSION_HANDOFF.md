@@ -1,6 +1,6 @@
 # Session Handoff
 
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 ## Current objective
 
@@ -35,6 +35,10 @@ required when multiple bodies use identical count sets. Counts on the other
 two axes must match. Compilation succeeded with Visual C++ 2022 and only
 existing external-header warnings. No complete multi-body runtime run has yet
 been performed, and geometric/FE interface continuity remains unverified.
+
+The approximate/global FFD choice is now configured with
+`use_microstructure_ffd = true|false`; it defaults to `true`. The separate
+tile-aggregation switch remains internal.
 
 ## User's proposed model
 

@@ -25,6 +25,9 @@ lattice_count_v = 5
 lattice_count_w = 20
 # body_stack_axis = w
 
+# true: approximate/global FFD placement; false: exact/local deformation.
+use_microstructure_ffd = true
+
 initial_thickness = 0.188
 
 mesh_sample = 6

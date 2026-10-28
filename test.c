@@ -3059,7 +3059,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     const int UseFFDTileAggregation = 0;
     /* Exact local deformation is required for full boundary skins on highly
      * curved maps; the approximate/global FFD path can invert skin TVs. */
-    const int UseMicroStructFFD = 0;
+    const CagdBType UseMicroStructFFD = Opt -> Run.UseMicroStructFFD;
     int B, D, Handler;
     int Ok = FALSE;
     CagdRType Steps[3][2];
@@ -4179,6 +4179,7 @@ static void OptSetDefaultRunInputs(OptRunInputStruct *Run)
     Run -> LatticeCountV = -1;
     Run -> LatticeCountW = -1;
     Run -> BodyStackAxis = -1;
+    Run -> UseMicroStructFFD = TRUE;
     Run -> InitialThickness = OPT_INVALID_REAL;
     Run -> MeshSample = -1;
     Run -> MaxIterations = -1;
@@ -4435,6 +4436,10 @@ static int InputHandler(const char *Key, const char *Value, void *Ctx)
             fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
             return FALSE;
         }
+        return TRUE;
+    }
+    if (strcmp(Key, "use_microstructure_ffd") == 0) {
+        Run -> UseMicroStructFFD = OptParseBool(Value);
         return TRUE;
     }
     if (strcmp(Key, "initial_thickness") == 0)
