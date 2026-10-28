@@ -109,3 +109,45 @@ how IRIT divides the macro geometry. Explicit body-local-to-global indexing is
 required for U and V stacking because body-contiguous storage is equivalent to
 global U-fast flattening only for W stacking.
 
+Status update, 2026-10-27: superseded in the active implementation by D-008.
+The imported persistent-topology cleanup executes only the first configured
+U/V/W count set, so the multi-body stack-axis behavior remains in Git history
+but is not present in the current source.
+
+## D-008 — Adopt fixed-topology single-body cleanup
+
+Date: 2026-10-27
+
+Decision: Adopt the externally prepared persistent-topology cleanup as the
+active implementation. Store FEM topology in an explicit model, store stable
+element IDs on subtiles, build neighbour groups once, and reject thin-tile
+removal during an optimization run.
+
+Reason: This makes the fixed-topology invariant explicit and removes repeated
+topology parsing, pointer rebinding, and geometric neighbour discovery. The
+tradeoff accepted by importing this version is that only the first configured
+U/V/W count set is executed; prior multi-body stack-axis support is preserved
+in Git history for possible later integration.
+
+Status update, 2026-10-28: the single-body execution restriction is superseded
+by D-009. The explicit persistent FEM/lattice containers and fixed-topology
+requirements remain active.
+
+## D-009 — Keep multi-body handling at the IRIT generation boundary
+
+Date: 2026-10-28
+
+Decision: Represent all configured macro bodies as one rectangular logical
+U/V/W lattice. Keep tiles, subtiles, neighbour groups, design updates, solver
+results, and CSV data body-independent. Call IRIT once per macro trivariate and
+translate each callback's local tile coordinate into the unified lattice.
+
+Reason: Body partitioning is a property of the macro-shape parameterization,
+not of the optimization variables. Restricting body-specific logic to loading,
+validation, IRIT dispatch, and export-order FEM binding lets the established
+single-lattice optimization pipeline remain unchanged.
+
+Limitation: matching counts on the two non-stack axes provides a logical
+correspondence only. It does not verify coincident faces, parameter direction,
+watertight geometry, merged mesh nodes, or solver coupling.
+

@@ -69,6 +69,8 @@
 * bookkeeping used by the optimization stages.                             *
 ***************************************************************************/
 
+#define OPT_C3D8_NODE_COUNT 8
+
 typedef struct OptNodeStruct {
     int Id;
     CagdRType X, Y, Z;
@@ -76,7 +78,9 @@ typedef struct OptNodeStruct {
 
 typedef struct OptElementStruct {
     int Id;
-    int NodeIds[8];
+    int NodeIds[OPT_C3D8_NODE_COUNT];
+    int NodeCount;
+
     CagdRType SED;
     CagdRType Volume;
     CagdRType StrainEnergy;
@@ -84,9 +88,10 @@ typedef struct OptElementStruct {
 } OptElementStruct;
 
 typedef struct OptSubTileStruct {
-    OptElementStruct **Elements;
+    /* Permanent FE ownership, established once from the first INP. */
+    int FirstElementIndex;
+    int *ElementIds;
     int ElementCount;
-    int ElementCapacity;
 
     CagdRType Thickness;
     CagdRType SED;
@@ -109,17 +114,32 @@ typedef struct OptTileStruct {
     CagdRType Gain;
 } OptTileStruct;
 
-typedef struct OptNodeArrayStruct {
-    OptNodeStruct *Items;
-    int Count;
-    int Capacity;
-} OptNodeArrayStruct;
+typedef struct OptFEMModelStruct {
+    OptNodeStruct *Nodes;
+    int NodeCount;
+    int NodeCapacity;
 
-typedef struct OptElementArrayStruct {
-    OptElementStruct *Items;
+    OptElementStruct *Elements;
+    int ElementCount;
+    int ElementCapacity;
+} OptFEMModelStruct;
+
+typedef struct OptNeighbourGroupStruct {
+    int *SubTileIds; /* Global ID = TileIndex * L + LocalSubTileIndex. */
     int Count;
-    int Capacity;
-} OptElementArrayStruct;
+} OptNeighbourGroupStruct;
+
+typedef struct OptLatticeModelStruct {
+    OptTileStruct *Tiles;
+    int TileCount;
+
+    OptNeighbourGroupStruct *NeighbourGroups;
+    int NeighbourGroupCount;
+    int NeighbourGroupCapacity;
+
+    CagdBType FEMTopologyBound;
+    CagdBType NeighboursBuilt;
+} OptLatticeModelStruct;
 
 typedef struct OptScalarFieldStruct {
     CagdRType *Values;
@@ -143,19 +163,6 @@ typedef int (*OptInputHandlerFuncType)(const char *Key,
 
 typedef struct OptWorkflowStateStruct OptWorkflowStateStruct;
 
-typedef struct OptBodyStruct {
-    char Name[OPT_MAX_NAME];
-    IritTrivTVStruct *Map;      /* Owned copy, one trivariate per body. */
-    int Counts[3];
-    int GridOrigin[3];          /* Origin in the combined logical grid. */
-    int TileCount;
-    CagdRType Min[3], Max[3];
-} OptBodyStruct;
-
-typedef struct OptMeshOwnerStruct {
-    int Tile, SubTile;          /* One record per exported Bezier patch. */
-} OptMeshOwnerStruct;
-
 typedef struct OptNeighbourEntryStruct {
     int LinearId;
     CagdRType X, Y, Z;
@@ -166,7 +173,8 @@ typedef struct UserMicroLocalDataStruct {
     CagdRType BndryThickness;
     LclThicknessFuncType ThicknessFuncCB;
     OptWorkflowStateStruct *Opt;
-    OptBodyStruct *Body;
+    int Counts[3];
+    int GridOrigin[3];
 } UserMicroLocalDataStruct;
 
 typedef struct OptLegacyStateStruct {
@@ -220,22 +228,16 @@ struct OptWorkflowStateStruct {
     char TimeSimulationFinish[16];
     char FolderName[OPT_MAX_NAME];
 
-    OptNodeArrayStruct Nodes;
-    OptElementArrayStruct Elements;
+    OptFEMModelStruct FEM;
+    OptLatticeModelStruct Lattice;
     OptScalarFieldStruct SedData;
     OptScalarFieldStruct VolumeData;
 
-    OptBodyStruct *Bodies;
-    int BodyCount, TotalTiles;
-    int GlobalCounts[3];
+    /* Geometry-generation adapter.  The optimization model itself remains
+     * one unified logical U/V/W lattice regardless of macro-body count. */
+    IritTrivTVStruct *DefMap;
+    int DefMapCount;
     int StackAxis;
-    OptMeshOwnerStruct *MeshOwners;
-    int MeshOwnerCount, MeshOwnerCapacity, MeshOwnerCursor;
-    CagdBType MeshTopologyInitialized;
-    OptTileStruct *TileStructure;    /* Persistent tile/subtile topology.
-                                       * FE links/connectivity are retained;
-                                       * coordinates, analysis fields, and
-                                       * thickness values are updated. */
     CagdRType *Results;              /* Flat array [Iter][3]. */
     OptLegacyStateStruct Legacy;     /* Per-run IRIT CSV/callback state. */
 };
@@ -297,12 +299,16 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
 static CagdRType ComputeMaxThicknessChange(const OptWorkflowStateStruct *Opt,
                                            const CagdRType *Prev,
                                            int Count);
-static void NeighbourMatching(OptWorkflowStateStruct *Opt);
+static int BuildNeighbourGroups(OptWorkflowStateStruct *Opt);
 static int CompareNeighbourEntries(const void *P1, const void *P2);
-static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
-                                  const CagdRType Local[][3],
-                                  int LocalCount,
-                                  int LDefOffset);
+static int BuildNeighbourGroupsB(OptWorkflowStateStruct *Opt,
+                                 const CagdRType Local[][3],
+                                 int LocalCount,
+                                 int LDefOffset);
+static int AppendNeighbourGroup(OptWorkflowStateStruct *Opt,
+                                const int *SubTileIds,
+                                int Count);
+static void ApplyNeighbourMatching(OptWorkflowStateStruct *Opt);
 static CagdRType OptDesignMoveFraction(int Iter);
 static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt);
 static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj);
@@ -329,36 +335,11 @@ static IritPrsrObjectStruct *PreProcessTileFFD(
                                   IritTrivFFDInfoStruct *FFDInfo);
 static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode);
 
-/* Multi-body support, implemented in multibody_support.inc. */
-static int OptParseCounts(const char *Text, int **Values, int *Count);
-static int OptCountBodyTVs(const IritPrsrObjectStruct *Obj);
-static int OptCopyBodyTVs(OptWorkflowStateStruct *Opt,
-                          const IritPrsrObjectStruct *Obj,
-                          int *BodyIndex,
-                          int *TileOffset);
-static int OptLoadBodies(OptWorkflowStateStruct *Opt);
+/* Geometry/config helpers. */
+static int OptParseCountList(const char *Text, int **Values, int *Count);
+static int OptLoadDefMap(OptWorkflowStateStruct *Opt);
 static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
-static int OptValidateMesh(OptWorkflowStateStruct *Opt);
-static int OptBodyForTile(const OptWorkflowStateStruct *Opt, int Tile);
-static int OptGlobalTileIndex(const OptWorkflowStateStruct *Opt,
-                              const OptBodyStruct *Body,
-                              int U,
-                              int V,
-                              int W);
-static void OptTagTile(IritPrsrObjectStruct *Obj,
-                       int Tile,
-                       int *GeomSub);
-static int OptAppendMeshOwner(OptWorkflowStateStruct *Opt,
-                              int Tile,
-                              int SubTile);
-static int OptCollectMesh(OptWorkflowStateStruct *Opt,
-                          IritPrsrObjectStruct *Obj,
-                          IritPrsrObjectStruct *Out,
-                          int SaveOwners);
-static IritPrsrObjectStruct *PostProcessTileBodies(
-                          IritPrsrObjectStruct *Tile,
-                          IritUserMicroPostProcessTileCBStruct *CB);
 
 /* Simulation data. */
 static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath);
@@ -372,16 +353,17 @@ static CagdRType *ReadTileData(const OptWorkflowStateStruct *Opt,
 static void InitializeWorkflowState(OptWorkflowStateStruct *Opt);
 static void ResolveLatticeLayout(OptWorkflowStateStruct *Opt);
 static void InitOrResetResultsArray(OptWorkflowStateStruct *Opt);
-static int InitTileStructure(OptWorkflowStateStruct *Opt);
+static int InitLatticeModel(OptWorkflowStateStruct *Opt);
+static int InitializePersistentTopology(OptWorkflowStateStruct *Opt);
+static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt);
 static void ClearTileAnalysisData(OptWorkflowStateStruct *Opt);
-static void DestroyTileStructure(OptWorkflowStateStruct *Opt);
+static void DestroyLatticeModel(OptWorkflowStateStruct *Opt);
 static void FreeWorkflowState(OptWorkflowStateStruct *Opt);
-static void NodeArrayReset(OptNodeArrayStruct *Arr);
-static void ElementArrayReset(OptElementArrayStruct *Arr);
-static int NodeArrayPush(OptNodeArrayStruct *Arr,
-                         const OptNodeStruct *Node);
-static int ElementArrayPush(OptElementArrayStruct *Arr,
-                            const OptElementStruct *Elem);
+static void FEMModelReset(OptFEMModelStruct *FEM);
+static int FEMNodePush(OptFEMModelStruct *FEM,
+                       const OptNodeStruct *Node);
+static int FEMElementPush(OptFEMModelStruct *FEM,
+                          const OptElementStruct *Elem);
 static void ScalarFieldReset(OptScalarFieldStruct *Field);
 static int ScalarFieldEnsureCapacity(OptScalarFieldStruct *Field,
                                      int RequiredId);
@@ -391,8 +373,6 @@ static void ScalarFieldSet(OptScalarFieldStruct *Field,
 static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
                                    int Id,
                                    CagdRType *Value);
-static int SubTileAddElementPtr(OptSubTileStruct *SubTile,
-                                OptElementStruct *Elem);
 
 /* Unified input parsing. */
 static void OptSetDefaultRunInputs(OptRunInputStruct *Run);
@@ -518,9 +498,9 @@ static int OptimizationMain(int Argc, char **Argv)
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Runs an optimization from one complete, caller-owned configuration.    *
-*   This is the entry point intended for the future IRIT user-library      *
-*   binding.                                                               *
+*   This is the entry point for the IRIT user-library binding.             *
 ***************************************************************************/
+
 int IritOptRun(const OptConfigStruct *Config, CagdBType GeometryOnly)
 {
     OptWorkflowStateStruct OptData;
@@ -558,7 +538,6 @@ int IritOptRun(const OptConfigStruct *Config, CagdBType GeometryOnly)
 * RETURN VALUE:                                                            *
 *   int: TRUE if the workflow completed, FALSE on failure.                 *
 ***************************************************************************/
-
 static int RunWorkflow(OptWorkflowStateStruct *Opt)
 {
     int Iter, Status;
@@ -584,6 +563,15 @@ static int RunWorkflow(OptWorkflowStateStruct *Opt)
         OptFormatNowHMS(Opt -> TimeIritStart);
         if (!RunIRITIntegrated(Opt, 0))
             OptFatal("IRIT generation step failed");
+
+        /*
+         * Parse and bind topology only after the first real INP is exported.
+         * The FEM connectivity, element-to-subtile ownership, and neighbour
+         * relationships then stay fixed for the entire optimization run.
+         */
+        if (!Opt -> Lattice.FEMTopologyBound &&
+            !InitializePersistentTopology(Opt))
+            OptFatal("Failed to initialize persistent FEM/lattice topology");
 
         OptFormatNowHMS(Opt -> TimeIritFinish);
         if (!RunSimulation(Opt))
@@ -631,7 +619,7 @@ static int InitLegacyDataFile(OptWorkflowStateStruct *Opt)
 
     OptWriteCsvHeader(F, Opt);
 
-    Times = Opt -> TotalTiles * Opt -> LMin;
+    Times = Opt -> Lattice.TileCount * Opt -> LMin;
     for (I = 0; I < Times; ++I)
         fprintf(F, "%d,%.17g,0\n", I + 1, Opt -> Run.InitialThickness);
 
@@ -821,27 +809,25 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     CagdRType TotalVolumeM3 = 0.0;
     int Ok = FALSE;
 
-    /* Read the IRIT mesh first; this also gives us reliable node IDs and
-     * coordinates for constructing the support and load node sets. */
-    if (!ReadINP(Opt, Opt -> Config.InpFile) ||
-        Opt -> Nodes.Count == 0 || Opt -> Elements.Count == 0) {
-        fprintf(stderr, "CalculiX: cannot read IRIT mesh %s\n",
-                Opt -> Config.InpFile);
+    /* Reuse the FEM topology parsed once from the first exported INP. */
+    if (!Opt -> Lattice.FEMTopologyBound ||
+        Opt -> FEM.NodeCount == 0 || Opt -> FEM.ElementCount == 0) {
+        fprintf(stderr, "CalculiX: persistent FEM topology is unavailable.\n");
         goto Cleanup;
     }
 
-    for (I = 0; I < Opt -> Nodes.Count; ++I) {
-        OptNodeStruct *Node = &Opt -> Nodes.Items[I];
+    for (I = 0; I < Opt -> FEM.NodeCount; ++I) {
+        OptNodeStruct *Node = &Opt -> FEM.Nodes[I];
         MinZ = IRIT_MIN(MinZ, Node -> Z);
         MaxZ = IRIT_MAX(MaxZ, Node -> Z);
         NodeMaxId = IRIT_MAX(NodeMaxId, Node -> Id);
     }
-    for (I = 0; I < Opt -> Elements.Count; ++I)
-        ElementMaxId = IRIT_MAX(ElementMaxId, Opt -> Elements.Items[I].Id);
+    for (I = 0; I < Opt -> FEM.ElementCount; ++I)
+        ElementMaxId = IRIT_MAX(ElementMaxId, Opt -> FEM.Elements[I].Id);
 
     ZTolerance = IRIT_MAX(1.0, fabs(MaxZ - MinZ)) * 1.0e-9;
-    for (I = 0; I < Opt -> Nodes.Count; ++I) {
-        OptNodeStruct *Node = &Opt -> Nodes.Items[I];
+    for (I = 0; I < Opt -> FEM.NodeCount; ++I) {
+        OptNodeStruct *Node = &Opt -> FEM.Nodes[I];
         if (fabs(Node -> Z - MinZ) <= ZTolerance)
             ++FixedCount;
         if (fabs(Node -> Z - MaxZ) <= ZTolerance &&
@@ -913,8 +899,8 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
             "-0.015 < Y < 0.015.\n");
     fprintf(Dst, "*NSET, NSET=FIXED\n");
     N = 0;
-    for (I = 0; I < Opt -> Nodes.Count; ++I) {
-        OptNodeStruct *Node = &Opt -> Nodes.Items[I];
+    for (I = 0; I < Opt -> FEM.NodeCount; ++I) {
+        OptNodeStruct *Node = &Opt -> FEM.Nodes[I];
         if (fabs(Node -> Z - MinZ) <= ZTolerance) {
             fprintf(Dst, "%d%s", Node -> Id,
                     (++N % 16 == 0 || N == FixedCount) ? "\n" : ",");
@@ -922,8 +908,8 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     }
     fprintf(Dst, "*NSET, NSET=LOADED\n");
     N = 0;
-    for (I = 0; I < Opt -> Nodes.Count; ++I) {
-        OptNodeStruct *Node = &Opt -> Nodes.Items[I];
+    for (I = 0; I < Opt -> FEM.NodeCount; ++I) {
+        OptNodeStruct *Node = &Opt -> FEM.Nodes[I];
         if (fabs(Node -> Z - MaxZ) <= ZTolerance &&
             Node -> Y > -0.015 && Node -> Y < 0.015) {
             fprintf(Dst, "%d%s", Node -> Id,
@@ -1098,15 +1084,15 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     fclose(Dat);
     Dat = NULL;
 
-    if (DispCount < Opt -> Nodes.Count ||
-        EnergyCount != Opt -> Elements.Count ||
-        VolumeCount != Opt -> Elements.Count) {
+    if (DispCount < Opt -> FEM.NodeCount ||
+        EnergyCount != Opt -> FEM.ElementCount ||
+        VolumeCount != Opt -> FEM.ElementCount) {
         fprintf(stderr,
                 "CalculiX output count mismatch: disp=%d/%d, energy=%d/%d, "
                 "volume=%d/%d.\n",
-                DispCount, Opt -> Nodes.Count,
-                EnergyCount, Opt -> Elements.Count,
-                VolumeCount, Opt -> Elements.Count);
+                DispCount, Opt -> FEM.NodeCount,
+                EnergyCount, Opt -> FEM.ElementCount,
+                VolumeCount, Opt -> FEM.ElementCount);
         goto Cleanup;
     }
 
@@ -1118,8 +1104,8 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
 
     fprintf(Sed, "Element Number\tENERGYPOTENTIAL/VOLUME (mJ/mm^3)\n");
     fprintf(VolumeOut, "Element Number\tVOLUME (mm^3)\n");
-    for (I = 0; I < Opt -> Elements.Count; ++I) {
-        int Id = Opt -> Elements.Items[I].Id;
+    for (I = 0; I < Opt -> FEM.ElementCount; ++I) {
+        int Id = Opt -> FEM.Elements[I].Id;
         if (ElementVolume[Id] <= 0.0)
             goto Cleanup;
         fprintf(Sed, "%d\t%.17g\n", Id,
@@ -1145,7 +1131,7 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     fprintf(stderr,
             "CalculiX completed: %d elements, max deflection %.6g mm, "
             "mass %.6g kg.\n",
-            Opt -> Elements.Count, (double) (MaxDeflectionM * MToMm),
+            Opt -> FEM.ElementCount, (double) (MaxDeflectionM * MToMm),
             (double) (TotalVolumeM3 * Opt -> Config.Density));
     Ok = TRUE;
 
@@ -1174,8 +1160,8 @@ Cleanup:
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Reads the current solver results, refreshes the persistent analysis     *
-* data, applies one design update, matches neighbouring interfaces, and    *
-* writes the thickness state for the next iteration.                       *
+* data, applies one design update, enforces the precomputed neighbour      *
+* groups, and writes the thickness state for the next iteration.           *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt:  Active optimization workflow state.                              *
@@ -1186,7 +1172,7 @@ Cleanup:
 ***************************************************************************/
 static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
 {
-    int TileCount = Opt -> TotalTiles;
+    int TileCount = Opt -> Lattice.TileCount;
     CagdRType *PrevThickness;
     char TargetBaseFolder[OPT_MAX_PATH];
 
@@ -1203,9 +1189,6 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
                          TargetBaseFolder,
                          Iter))
         return -1;
-
-    if (!ReadINP(Opt, Opt -> Config.InpFile))
-        OptFatalF("Failed to parse INP file: %s", Opt -> Config.InpFile);
 
     if (!ReadSimulationData(Opt -> Config.SedFile, &Opt -> SedData))
         OptFatalF("Failed to parse SED file: %s", Opt -> Config.SedFile);
@@ -1264,7 +1247,7 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
             return -1;
     }
 
-    NeighbourMatching(Opt);
+    ApplyNeighbourMatching(Opt);
 
 #ifdef _WIN32
     {
@@ -1470,7 +1453,7 @@ static int ReadLastRowOfDesignParameters(const char *FileName,
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-*   Refreshes the persistent TileStructure with data from the current      *
+*   Refreshes the persistent lattice tile model with data from the current      *
 *   ANSYS solution.  Topology and thickness are preserved.                  *
 *                                                                          *
 * PARAMETERS:                                                              *
@@ -1479,97 +1462,34 @@ static int ReadLastRowOfDesignParameters(const char *FileName,
 * RETURN VALUE:                                                            *
 *   void                                                                   *
 ***************************************************************************/
-
 static void UpdateTileAnalysisData(OptWorkflowStateStruct *Opt)
 {
     int I, L, X;
 
-    /*
-     * TileStructure was created once in InitializeWorkflowState().
-     * Clear only fields that belong to the previous ANSYS solution.
-     * SubTile -> Thickness is deliberately preserved.
-     */
-    if (Opt -> TileStructure == NULL)
-        OptFatal("TileStructure was not initialized before analysis update");
+    if (Opt -> Lattice.Tiles == NULL || !Opt -> Lattice.FEMTopologyBound)
+        OptFatal("Persistent lattice/FEM topology was not initialized");
+
+    /* Only solver-result fields change between iterations. */
     ClearTileAnalysisData(Opt);
 
-    if (Opt -> Elements.Count != Opt -> MeshOwnerCount * Opt -> MeshSample) {
-        fprintf(stderr,
-                "Mesh ownership mismatch: elements=%d, owners=%d, "
-                "configured elements/owner=%d.\n",
-                Opt -> Elements.Count,
-                Opt -> MeshOwnerCount,
-                Opt -> MeshSample);
-        OptFatal("Mesh element count does not match exported ownership map");
-    }
-    if (!Opt -> MeshTopologyInitialized) {
-        for (I = 0; I < Opt -> Elements.Count; ++I) {
-            OptMeshOwnerStruct *Owner =
-                &Opt -> MeshOwners[I / Opt -> MeshSample];
-            if (Opt -> Elements.Items[I].Id != I + 1)
-                OptFatal("INP element order/IDs differ from exported mesh");
-            if (!SubTileAddElementPtr(
-                        &Opt -> TileStructure[Owner -> Tile].
-                            SubTiles[Owner -> SubTile],
-                        &Opt -> Elements.Items[I]))
-                OptFatal("Cannot assign persistent element ownership");
-        }
-        Opt -> MeshTopologyInitialized = TRUE;
-    }
-
-    /* ------------------------------------------------------------
-     * Assign element SED, volume, strain energy, and compliance
-     * contribution.
-     * ------------------------------------------------------------ */
-    for (I = 0; I < Opt -> Elements.Count; ++I) {
+    for (I = 0; I < Opt -> FEM.ElementCount; ++I) {
         CagdRType SedVal = 0.0;
         CagdRType VolVal = 0.0;
+        OptElementStruct *Elem = &Opt -> FEM.Elements[I];
 
-        if (ScalarFieldTryGet(&Opt -> SedData,
-            Opt -> Elements.Items[I].Id,
-            &SedVal)) {
-            Opt -> Elements.Items[I].SED = SedVal;
-        }
-        else {
-            Opt -> Elements.Items[I].SED = 0.0;
-        }
-
-        if (ScalarFieldTryGet(&Opt -> VolumeData,
-            Opt -> Elements.Items[I].Id,
-            &VolVal)) {
-            Opt -> Elements.Items[I].Volume = VolVal;
-        }
-        else {
-            Opt -> Elements.Items[I].Volume = 0.0;
-        }
-
-        /*
-         * Element strain energy:
-         *     SE_e = SED_e * V_e
-         *
-         * Element compliance contribution:
-         *     C_e ~= 2 * SE_e
-         */
-        Opt -> Elements.Items[I].StrainEnergy =
-            Opt -> Elements.Items[I].SED *
-            Opt -> Elements.Items[I].Volume;
-
-        Opt -> Elements.Items[I].ComplianceContribution =
-            2.0 * Opt -> Elements.Items[I].StrainEnergy;
+        Elem -> SED = ScalarFieldTryGet(&Opt -> SedData, Elem -> Id, &SedVal)
+            ? SedVal : 0.0;
+        Elem -> Volume = ScalarFieldTryGet(&Opt -> VolumeData, Elem -> Id, &VolVal)
+            ? VolVal : 0.0;
+        Elem -> StrainEnergy = Elem -> SED * Elem -> Volume;
+        Elem -> ComplianceContribution = 2.0 * Elem -> StrainEnergy;
     }
 
-    /* ------------------------------------------------------------
-     * Map elements into tiles/subtiles and compute subtile values.
-     * ------------------------------------------------------------ */
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        OptTileStruct *Tile = &Opt -> TileStructure[I];
+    /* Aggregate the already-bound elements into each persistent subtile. */
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
-        Tile -> Volume = 0.0;
-        Tile -> StrainEnergy = 0.0;
-        Tile -> ComplianceContribution = 0.0;
-        Tile -> Gain = 0.0;
-
-        for (L = 0; L < Opt -> L; ++L) {
+        for (L = 0; L < Tile -> SubTileCount; ++L) {
             OptSubTileStruct *SubTile = &Tile -> SubTiles[L];
             CagdRType SedSum = 0.0;
             CagdRType MaxSed = 0.0;
@@ -1577,78 +1497,41 @@ static void UpdateTileAnalysisData(OptWorkflowStateStruct *Opt)
             CagdRType SESum = 0.0;
             CagdRType CSum = 0.0;
 
-            SubTile -> Volume = 0.0;
-            SubTile -> StrainEnergy = 0.0;
-            SubTile -> ComplianceContribution = 0.0;
-            SubTile -> Gain = 0.0;
-
             for (X = 0; X < SubTile -> ElementCount; ++X) {
+                int ElementIndex = SubTile -> FirstElementIndex + X;
                 OptElementStruct *Elem;
 
-                Elem = SubTile -> Elements[X];
+                if (ElementIndex < 0 || ElementIndex >= Opt -> FEM.ElementCount)
+                    OptFatal("Stored subtile element index is outside FEM model");
+                Elem = &Opt -> FEM.Elements[ElementIndex];
+
+                if (SubTile -> ElementIds[X] != Elem -> Id)
+                    OptFatal("Persistent subtile element-ID mapping was corrupted");
 
                 SedSum += Elem -> SED;
-
-                if (Elem -> SED > MaxSed)
-                    MaxSed = Elem -> SED;
-
+                MaxSed = IRIT_MAX(MaxSed, Elem -> SED);
                 VolSum += Elem -> Volume;
                 SESum += Elem -> StrainEnergy;
                 CSum += Elem -> ComplianceContribution;
-
             }
 
             SubTile -> Volume = VolSum;
             SubTile -> StrainEnergy = SESum;
             SubTile -> ComplianceContribution = CSum;
-
-            /*
-             * Prefer volume-weighted SED:
-             *     SED_s = SE_s / V_s
-             *
-             * If volume is missing, fall back to the old arithmetic
-             * average.
-             */
-            if (SubTile -> Volume > 0.0) {
-                SubTile -> SED =
-                    SubTile -> StrainEnergy / SubTile -> Volume;
-            }
-            else {
-                SubTile -> SED =
-                    SedSum / (SubTile -> ElementCount > 0 ?
-                        SubTile -> ElementCount : 1);
-            }
-
             SubTile -> MaxSED = MaxSed;
+            SubTile -> SED = VolSum > 0.0
+                ? SESum / VolSum
+                : SedSum / (SubTile -> ElementCount > 0 ? SubTile -> ElementCount : 1);
+            SubTile -> Gain = VolSum > 0.0 ? CSum / VolSum : 0.0;
 
-            /*
-             * TO-like local update indicator:
-             *     Gain = C_s / V_s
-             *
-             * Since C_s ~= 2 * SE_s, this is proportional to SED.
-             */
-            if (SubTile -> Volume > 0.0) {
-                SubTile -> Gain =
-                    SubTile -> ComplianceContribution /
-                    SubTile -> Volume;
-            }
-            else {
-                SubTile -> Gain = 0.0;
-            }
-
-            Tile -> Volume += SubTile -> Volume;
-            Tile -> StrainEnergy += SubTile -> StrainEnergy;
-            Tile -> ComplianceContribution +=
-                SubTile -> ComplianceContribution;
+            Tile -> Volume += VolSum;
+            Tile -> StrainEnergy += SESum;
+            Tile -> ComplianceContribution += CSum;
         }
 
-        if (Tile -> Volume > 0.0) {
-            Tile -> Gain =
-                Tile -> ComplianceContribution / Tile -> Volume;
-        }
-        else {
-            Tile -> Gain = 0.0;
-        }
+        Tile -> Gain = Tile -> Volume > 0.0
+            ? Tile -> ComplianceContribution / Tile -> Volume
+            : 0.0;
     }
 }
 
@@ -1701,8 +1584,8 @@ static CagdRType DesignUpdateSEDRatio(OptWorkflowStateStruct *Opt,
     if (Sedr == NULL)
         OptFatal("Failed to allocate SED scratch array");
 
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        OptTileStruct *Tile = &Opt -> TileStructure[I];
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             CagdRType TOld;
@@ -1861,8 +1744,8 @@ static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
         OptFatal("Failed to allocate MMA scratch arrays");
 
     Counter = 0;
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        OptTileStruct *Tile = &Opt -> TileStructure[I];
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             OptSubTileStruct *SubTile = &Tile -> SubTiles[L];
@@ -1941,8 +1824,8 @@ static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
     }
 
     Counter = 0;
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        OptTileStruct *Tile = &Opt -> TileStructure[I];
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             CagdRType TNew = X[Counter];
@@ -2117,8 +2000,8 @@ static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
         Counter = 0;
         Lambda = 0.5 * (L1 + L2);
 
-        for (I = 0; I < Opt -> TotalTiles; ++I) {
-            OptTileStruct *Tile = &Opt -> TileStructure[I];
+        for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+            OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
             for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
                 CagdRType TOld = Prev[Counter];
@@ -2153,8 +2036,8 @@ static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
 
     Counter = 0;
     SumNew = 0.0;
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        OptTileStruct *Tile = &Opt -> TileStructure[I];
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             CagdRType TOld = Prev[Counter];
@@ -2214,8 +2097,8 @@ static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-*   Updates thicknesses using the direct ASAF SED-ratio rule in canonical  *
-* global tile/subtile order.                                                *
+*   Updates thicknesses using the direct ASAF SED-ratio rule while         *
+* preserving the physical W/V/U/subtile traversal order.              *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt:   Active optimization workflow state.                             *
@@ -2232,7 +2115,7 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
                                   int Iter)
 {
     int Counter = 0;
-    int T, L;
+    int U, V, W, L;
     CagdRType MaxThicknessChange = 0.0;
     CagdRType PowFactor = 0.35;
     CagdRType MaxChange = 0.3;
@@ -2250,50 +2133,49 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
     if (TargetSed <= 0.0)
         OptFatal("Invalid target SED value in DesignUpdateAsaf");
 
-    for (T = 0; T < Opt -> TotalTiles; ++T) {
-        OptTileStruct *Tile = &Opt -> TileStructure[T];
+    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
+                int TileIndex = U + Opt -> Run.LatticeCountU *
+                    (V + Opt -> Run.LatticeCountV * W);
+                OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
 
-        for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
-            CagdRType TOld;
-            CagdRType TNew;
-            CagdRType SedFactor;
-            CagdRType Change;
-            CagdRType AbsThicknessChange;
+                for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
+                    CagdRType TOld, TNew, SedFactor, Change, AbsThicknessChange;
 
-            if (Counter >= Count)
-                OptFatal("DesignUpdateAsaf thickness count mismatch");
+                    if (Counter >= Count)
+                        OptFatal("DesignUpdateAsaf thickness count mismatch");
 
-            TOld = Prev[Counter];
-            SedFactor = Tile -> SubTiles[L].SED / TargetSed;
-            if (SedFactor < 0.0 || !isfinite(SedFactor))
-                SedFactor = 0.0;
+                    TOld = Prev[Counter];
+                    SedFactor = Tile -> SubTiles[L].SED / TargetSed;
+                    if (SedFactor < 0.0 || !isfinite(SedFactor))
+                        SedFactor = 0.0;
 
-            Change = pow(SedFactor, PowFactor);
+                    Change = pow(SedFactor, PowFactor);
+                    if (Change > 1.0 + MaxChange)
+                        Change = 1.0 + MaxChange;
+                    if (Change < 1.0 - MaxChange)
+                        Change = 1.0 - MaxChange;
 
-            if (Change > 1.0 + MaxChange)
-                Change = 1.0 + MaxChange;
-            if (Change < 1.0 - MaxChange)
-                Change = 1.0 - MaxChange;
+                    TNew = TOld * Change;
+                    if (TNew < Opt -> Config.MinimumThickness)
+                        TNew = Opt -> Config.MinimumThickness;
+                    if (TNew > OPT_MAX_TILE_THICKNESS)
+                        TNew = OPT_MAX_TILE_THICKNESS;
 
-            TNew = TOld * Change;
+                    Tile -> SubTiles[L].Thickness = TNew;
+                    AbsThicknessChange = fabs(TNew - TOld);
+                    if (AbsThicknessChange > MaxThicknessChange)
+                        MaxThicknessChange = AbsThicknessChange;
 
-            if (TNew < Opt -> Config.MinimumThickness)
-                TNew = Opt -> Config.MinimumThickness;
-            if (TNew > OPT_MAX_TILE_THICKNESS)
-                TNew = OPT_MAX_TILE_THICKNESS;
-
-            Tile -> SubTiles[L].Thickness = TNew;
-
-            AbsThicknessChange = fabs(TNew - TOld);
-            if (AbsThicknessChange > MaxThicknessChange)
-                MaxThicknessChange = AbsThicknessChange;
-
-            fprintf(stderr,
-                    "GTile=%d Sub=%d SED=%g Told=%g Tnew=%g Change=%g\n",
-                    T, L,
-                    Tile -> SubTiles[L].SED, TOld, TNew, Change);
-
-            ++Counter;
+                    fprintf(stderr,
+                            "Tile[%d,%d,%d] TileIndex=%d Sub=%d "
+                            "SED=%g Told=%g Tnew=%g Change=%g\n",
+                            U, V, W, TileIndex, L,
+                            Tile -> SubTiles[L].SED, TOld, TNew, Change);
+                    ++Counter;
+                }
+            }
         }
     }
 
@@ -2328,8 +2210,8 @@ static CagdRType ComputeMaxThicknessChange(const OptWorkflowStateStruct *Opt,
     if (Opt == NULL || Prev == NULL || Count <= 0)
         return 0.0;
 
-    for (I = 0; I < Opt -> TotalTiles; ++I) {
-        const OptTileStruct *Tile = &Opt -> TileStructure[I];
+    for (I = 0; I < Opt -> Lattice.TileCount; ++I) {
+        const OptTileStruct *Tile = &Opt -> Lattice.Tiles[I];
 
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             CagdRType Delta;
@@ -2354,7 +2236,8 @@ static CagdRType ComputeMaxThicknessChange(const OptWorkflowStateStruct *Opt,
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-*   Enforces equal thickness values on coincident tile interfaces.         *
+*   Discovers coincident subtile interfaces once and stores persistent      *
+*   neighbour groups for later thickness enforcement.                     *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt: Active optimization workflow state.                               *
@@ -2362,48 +2245,40 @@ static CagdRType ComputeMaxThicknessChange(const OptWorkflowStateStruct *Opt,
 * RETURN VALUE:                                                            *
 *   void                                                                   *
 ***************************************************************************/
-
-static void NeighbourMatching(OptWorkflowStateStruct *Opt)
+static int BuildNeighbourGroups(OptWorkflowStateStruct *Opt)
 {
     static const CagdRType Local0[6][3] = {
-        { 0.5, 0.5, 1.0 },  /* W+. */
-        { 0.5, 0.5, 0.0 },  /* W-. */
-        { 0.5, 1.0, 0.5 },  /* V+. */
-        { 0.5, 0.0, 0.5 },  /* V-. */
-        { 1.0, 0.5, 0.5 },  /* U+. */
-        { 0.0, 0.5, 0.5 }   /* U-. */
+        { 0.5, 0.5, 1.0 }, { 0.5, 0.5, 0.0 },
+        { 0.5, 1.0, 0.5 }, { 0.5, 0.0, 0.5 },
+        { 1.0, 0.5, 0.5 }, { 0.0, 0.5, 0.5 }
     };
-
     static const CagdRType Local01[6][3] = {
-        { 0.5, 0.5, 0.0 },  /* W-. */
-        { 0.5, 0.5, 1.0 },  /* W+. */
-        { 0.5, 0.0, 0.5 },  /* V-. */
-        { 0.5, 1.0, 0.5 },  /* V+. */
-        { 0.0, 0.5, 0.5 },  /* U-. */
-        { 1.0, 0.5, 0.5 }   /* U+. */
+        { 0.5, 0.5, 0.0 }, { 0.5, 0.5, 1.0 },
+        { 0.5, 0.0, 0.5 }, { 0.5, 1.0, 0.5 },
+        { 0.0, 0.5, 0.5 }, { 1.0, 0.5, 0.5 }
     };
-
     static const CagdRType Local2[8][3] = {
         { 0.0, 0.0, 0.0 }, { 1.0, 0.0, 0.0 },
         { 0.0, 1.0, 0.0 }, { 1.0, 1.0, 0.0 },
         { 0.0, 0.0, 1.0 }, { 1.0, 0.0, 1.0 },
         { 0.0, 1.0, 1.0 }, { 1.0, 1.0, 1.0 }
     };
+    int Ok = FALSE;
+
+    if (Opt -> Lattice.NeighboursBuilt)
+        return TRUE;
 
     switch (Opt -> Run.LatticeType) {
-        case 0:
-            NeighbourMatchingB_V2(Opt, Local0, 6, 0);
-            break;
-        case 1:
-            NeighbourMatchingB_V2(Opt, Local01, 6, 0);
-            break;
-        case 2:
-            NeighbourMatchingB_V2(Opt, Local2, 8, 8);
-            break;
-        default:
-            NeighbourMatchingB_V2(Opt, Local0, 6, 0);
-            break;
+        case 0: Ok = BuildNeighbourGroupsB(Opt, Local0, 6, 0); break;
+        case 1: Ok = BuildNeighbourGroupsB(Opt, Local01, 6, 0); break;
+        case 2: Ok = BuildNeighbourGroupsB(Opt, Local2, 8, 8); break;
+        case 3: Ok = BuildNeighbourGroupsB(Opt, Local0, 6, 0); break;
+        default: return FALSE;
     }
+
+    if (Ok)
+        Opt -> Lattice.NeighboursBuilt = TRUE;
+    return Ok;
 }
 
 /***************************************************************************
@@ -2433,32 +2308,28 @@ static int CompareNeighbourEntries(const void *P1, const void *P2)
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Matches coincident arm-end thicknesses in one combined flat 3D grid.     *
-* Bodies occupy consecutive ranges on the selected stack axis and are      *
-* deliberately invisible here.                                             *
+* Builds persistent groups of coincident arm ends in the lattice grid.     *
 ***************************************************************************/
-static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
-                                  const CagdRType Local[][3],
-                                  int LocalCount,
-                                  int LDefOffset)
+static int BuildNeighbourGroupsB(OptWorkflowStateStruct *Opt,
+                                 const CagdRType Local[][3],
+                                 int LocalCount,
+                                 int LDefOffset)
 {
     int U, V, W, L, I, J, G;
     int X = 0;
-    int Total = Opt -> TotalTiles * LocalCount;
-    int CountU = Opt -> GlobalCounts[0];
-    int CountV = Opt -> GlobalCounts[1];
-    int CountW = Opt -> GlobalCounts[2];
+    int Total = Opt -> Lattice.TileCount * LocalCount;
     OptNeighbourEntryStruct *Entries;
 
     Entries = (OptNeighbourEntryStruct *)
-        OptAllocZero(Total, sizeof(OptNeighbourEntryStruct));
+        OptAllocZero((size_t) Total, sizeof(OptNeighbourEntryStruct));
     if (Entries == NULL)
-        OptFatal("Cannot allocate neighbour data");
+        return FALSE;
 
-    for (W = 0; W < CountW; ++W) {
-        for (V = 0; V < CountV; ++V) {
-            for (U = 0; U < CountU; ++U) {
-                int Tile = U + CountU * (V + CountV * W);
+    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
+                int Tile = U + Opt -> Run.LatticeCountU *
+                    (V + Opt -> Run.LatticeCountV * W);
 
                 for (L = 0; L < LocalCount; ++L) {
                     Entries[X].LinearId = Tile * LocalCount + L;
@@ -2471,42 +2342,105 @@ static void NeighbourMatchingB_V2(OptWorkflowStateStruct *Opt,
         }
     }
 
-    if (X != Total)
-        OptFatal("Combined neighbour grid does not match TotalTiles");
-
-    qsort(Entries, X, sizeof(*Entries), CompareNeighbourEntries);
+    qsort(Entries, (size_t) X, sizeof(*Entries), CompareNeighbourEntries);
 
     for (I = 0; I < X; I = J) {
-        CagdRType Avg = 0.0;
-
         for (J = I + 1;
-             J < X &&
-             CompareNeighbourEntries(&Entries[I], &Entries[J]) == 0;
+             J < X && CompareNeighbourEntries(&Entries[I], &Entries[J]) == 0;
              ++J)
             ;
 
-        for (G = I; G < J; ++G) {
-            int Id = Entries[G].LinearId;
-            OptSubTileStruct *SubTile =
-                &Opt -> TileStructure[Id / LocalCount].SubTiles[
-                    Id % LocalCount + LDefOffset];
+        /* Boundary points with only one arm require no equality constraint. */
+        if (J - I > 1) {
+            int Count = J - I;
+            int *Ids = (int *) OptAllocZero((size_t) Count, sizeof(int));
+            if (Ids == NULL) {
+                IritFree(Entries);
+                return FALSE;
+            }
 
-            Avg += SubTile -> Thickness;
-        }
+            for (G = 0; G < Count; ++G) {
+                int LocalId = Entries[I + G].LinearId;
+                int TileIndex = LocalId / LocalCount;
+                int SubTileIndex = LocalId % LocalCount + LDefOffset;
+                Ids[G] = TileIndex * Opt -> L + SubTileIndex;
+            }
 
-        Avg /= J - I;
-        for (G = I; G < J; ++G) {
-            int Id = Entries[G].LinearId;
-            OptSubTileStruct *SubTile =
-                &Opt -> TileStructure[Id / LocalCount].SubTiles[
-                    Id % LocalCount + LDefOffset];
-
-            SubTile -> Thickness = Avg;
+            if (!AppendNeighbourGroup(Opt, Ids, Count)) {
+                IritFree(Ids);
+                IritFree(Entries);
+                return FALSE;
+            }
+            IritFree(Ids);
         }
     }
 
     IritFree(Entries);
+    return TRUE;
 }
+
+static int AppendNeighbourGroup(OptWorkflowStateStruct *Opt,
+                                const int *SubTileIds,
+                                int Count)
+{
+    OptNeighbourGroupStruct *Group;
+
+    if (Count <= 1)
+        return TRUE;
+
+    if (Opt -> Lattice.NeighbourGroupCount >=
+        Opt -> Lattice.NeighbourGroupCapacity) {
+        int OldCap = Opt -> Lattice.NeighbourGroupCapacity;
+        int NewCap = OldCap == 0 ? 64 : OldCap * 2;
+        OptNeighbourGroupStruct *NewGroups =
+            (OptNeighbourGroupStruct *) OptReallocCopy(
+                Opt -> Lattice.NeighbourGroups,
+                (size_t) OldCap * sizeof(OptNeighbourGroupStruct),
+                (size_t) NewCap * sizeof(OptNeighbourGroupStruct));
+        if (NewGroups == NULL)
+            return FALSE;
+        Opt -> Lattice.NeighbourGroups = NewGroups;
+        Opt -> Lattice.NeighbourGroupCapacity = NewCap;
+    }
+
+    Group = &Opt -> Lattice.NeighbourGroups[Opt -> Lattice.NeighbourGroupCount];
+    Group -> SubTileIds = (int *) OptAllocZero((size_t) Count, sizeof(int));
+    if (Group -> SubTileIds == NULL)
+        return FALSE;
+    IRIT_GEN_COPY(Group -> SubTileIds, SubTileIds, (size_t) Count * sizeof(int));
+    Group -> Count = Count;
+    ++Opt -> Lattice.NeighbourGroupCount;
+    return TRUE;
+}
+
+static void ApplyNeighbourMatching(OptWorkflowStateStruct *Opt)
+{
+    int G, I;
+
+    if (!Opt -> Lattice.NeighboursBuilt)
+        OptFatal("Neighbour groups were not initialized");
+
+    for (G = 0; G < Opt -> Lattice.NeighbourGroupCount; ++G) {
+        OptNeighbourGroupStruct *Group = &Opt -> Lattice.NeighbourGroups[G];
+        CagdRType Avg = 0.0;
+
+        for (I = 0; I < Group -> Count; ++I) {
+            int GlobalId = Group -> SubTileIds[I];
+            int TileIndex = GlobalId / Opt -> L;
+            int SubTileIndex = GlobalId % Opt -> L;
+            Avg += Opt -> Lattice.Tiles[TileIndex].SubTiles[SubTileIndex].Thickness;
+        }
+        Avg /= Group -> Count;
+
+        for (I = 0; I < Group -> Count; ++I) {
+            int GlobalId = Group -> SubTileIds[I];
+            int TileIndex = GlobalId / Opt -> L;
+            int SubTileIndex = GlobalId % Opt -> L;
+            Opt -> Lattice.Tiles[TileIndex].SubTiles[SubTileIndex].Thickness = Avg;
+        }
+    }
+}
+
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
@@ -2665,7 +2599,7 @@ static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj)
 static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt)
 {
     FILE *F;
-    int T, L;
+    int U, V, W, L;
     int CounterFile = 0;
 
     F = fopen(Opt -> Config.DataNewFile, "w");
@@ -2674,22 +2608,28 @@ static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt)
 
     OptWriteCsvHeader(F, Opt);
 
-    for (T = 0; T < Opt -> TotalTiles; ++T) {
-        for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
-            fprintf(F,
-                "%d,%.17g,%.17g\n",
-                CounterFile + 1,
-                (double) Opt -> TileStructure[T].SubTiles[L].Thickness,
-                (double) Opt -> TileStructure[T].SubTiles[L].SED);
-            ++CounterFile;
+    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
+                int TileIndex = U + Opt -> Run.LatticeCountU *
+                    (V + Opt -> Run.LatticeCountV * W);
+
+                for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
+                    fprintf(F,
+                            "%d,%.17g,%.17g\n",
+                            CounterFile + 1,
+                            (double) Opt -> Lattice.Tiles[TileIndex].SubTiles[L].Thickness,
+                            (double) Opt -> Lattice.Tiles[TileIndex].SubTiles[L].SED);
+                    ++CounterFile;
+                }
+            }
         }
     }
 
-    if (CounterFile != Opt -> TotalTiles * Opt -> LMin) {
+    if (CounterFile != Opt -> Lattice.TileCount * Opt -> LMin) {
         fclose(F);
         OptFatal("CreateLegacyDataFile thickness count mismatch");
     }
-
     fclose(F);
 }
 
@@ -2742,7 +2682,7 @@ static float **ReadLegacyCsvToFloatArray(OptWorkflowStateStruct *Opt,
                          const char *FileName, int *OutRows, int *OutCols)
 {
     int I;
-    int N = Opt -> TotalTiles * Opt -> LMin;
+    int N = Opt -> Lattice.TileCount * Opt -> LMin;
     CagdRType *Values = ReadTileData(Opt, FileName, N);
     float **Data;
     if (!Values)
@@ -2814,7 +2754,11 @@ static int PreProcessTile1FaceParam(
     BPrm -> Circular = Circ;
     BPrm -> InnerRadius = 0.0;
     BPrm -> OuterRadius = OuterRadius;
-    memcpy(BPrm->Bndry, SkinThickness, sizeof(BPrm->Bndry));
+    BPrm->Bndry[0] = SkinThickness[0];
+    BPrm->Bndry[1] = SkinThickness[1];
+    BPrm->Bndry[2] = SkinThickness[2];
+    BPrm->Bndry[3] = SkinThickness[3];
+
     return TRUE;
 }
 
@@ -2850,10 +2794,11 @@ static IritPrsrObjectStruct *PreProcessTile(
 
     assert(Tile == NULL);
 
-    Index = CBData -> TileIdxs[0] +
-        CBData -> TileIdxs[1] * LclData -> Body -> Counts[0] +
-        CBData -> TileIdxs[2] * LclData -> Body -> Counts[0] *
-            LclData -> Body -> Counts[1];
+    Index = LclData -> GridOrigin[0] + CBData -> TileIdxs[0] +
+        (LclData -> GridOrigin[1] + CBData -> TileIdxs[1]) *
+            Opt -> Run.LatticeCountU +
+        (LclData -> GridOrigin[2] + CBData -> TileIdxs[2]) *
+            Opt -> Run.LatticeCountU * Opt -> Run.LatticeCountV;
 
     fprintf(stderr,
             "Index:[%d], Tile[%d,%d,%d] from "
@@ -2885,14 +2830,10 @@ static IritPrsrObjectStruct *PreProcessTile(
             break;
     }
 
-    if (Index < 0 || Index >= LclData -> Body -> TileCount)
-        OptFatal("Tile callback index outside body grid");
+    if (Index < 0 || Index >= Opt -> Lattice.TileCount)
+        OptFatal("Tile callback index outside lattice grid");
 
-    BaseIndex = OptGlobalTileIndex(Opt,
-                                  LclData -> Body,
-                                  CBData -> TileIdxs[0],
-                                  CBData -> TileIdxs[1],
-                                  CBData -> TileIdxs[2]) * Arms;
+    BaseIndex = Index * Arms;
     if (BaseIndex + Arms > Opt -> Legacy.Rows)
         OptFatal("Tile callback exceeds thickness data");
 
@@ -2924,9 +2865,6 @@ static IritPrsrObjectStruct *PreProcessTile(
             for (SkinIndex = 0; SkinIndex < 4; ++SkinIndex)
                 UniformSkin[SkinIndex] = Opt -> Run.SkinThickness;
 
-            /* Currently applied to both U faces of every type-0 tile.
-             * Restricting it to exterior macro-shape faces is a separate
-             * topology-aware step. */
             if (!PreProcessTile1FaceParam(
                                       &WMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 0][1],
@@ -3073,9 +3011,9 @@ static IritPrsrObjectStruct *PreProcessTileFFD(
     IRIT_ZAP_MEM(&CBData, sizeof(CBData));
     CBData.CBFuncData = LclData;
 
-    Counts[0] = LclData -> Body -> Counts[0];
-    Counts[1] = LclData -> Body -> Counts[1];
-    Counts[2] = LclData -> Body -> Counts[2];
+    Counts[0] = LclData -> Counts[0];
+    Counts[1] = LclData -> Counts[1];
+    Counts[2] = LclData -> Counts[2];
 
     IritTrivTVDomain(LclData -> DefMap,
                     &Min[0], &Max[0],
@@ -3130,19 +3068,23 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     IrtHmgnMatType Mat;
     IritMvarMVStruct *MV = NULL;
     IritPrsrObjectStruct *MS = NULL;
-    IritPrsrObjectStruct *Scaled = NULL;
     IritPrsrObjectStruct *BodyMS = NULL;
+    IritPrsrObjectStruct *Scaled = NULL;
     IritUserMicroParamStruct Param;
     IritUserMicroRegularParamStruct *Reg = &Param.U.RegularParam;
     IritTrivFFDInfoStruct FFDInfo;
     IritPrsrINPSaveDfltFileParamsStruct Save;
     UserMicroLocalDataStruct LclData;
 
+    IritTrivTVStruct *BodyMap;
+
+    if (Opt -> DefMap == NULL || Opt -> DefMapCount <= 0)
+        return FALSE;
+
     Opt -> DefMapVol = 0.0;
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        Opt -> DefMapVol +=
-            fabs(IritTrivTVVolume(Opt -> Bodies[B].Map, TRUE)) * ScaleVol;
-    }
+    for (BodyMap = Opt -> DefMap; BodyMap != NULL;
+         BodyMap = BodyMap -> Pnext)
+        Opt -> DefMapVol += fabs(IritTrivTVVolume(BodyMap, TRUE)) * ScaleVol;
 
     if (Mode == 2)
         return TRUE;
@@ -3151,31 +3093,37 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     if (MS == NULL)
         return FALSE;
 
-    if (Mode == 0) {
-        Opt -> MeshOwnerCursor = 0;
-        if (!Opt -> MeshTopologyInitialized)
-            Opt -> MeshOwnerCount = 0;
-    }
+    BodyMap = Opt -> DefMap;
+    for (B = 0; B < Opt -> DefMapCount; ++B, BodyMap = BodyMap -> Pnext) {
+        int Counts[3];
+        int GridOrigin[3] = { 0, 0, 0 };
+        int I;
 
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        OptBodyStruct *Body = &Opt -> Bodies[B];
+        if (BodyMap == NULL)
+            goto Cleanup;
+        for (D = 0; D < 3; ++D)
+            Counts[D] = Opt -> Run.LatticeCountLists[D][B];
+        for (I = 0; I < B; ++I)
+            GridOrigin[Opt -> StackAxis] +=
+                Opt -> Run.LatticeCountLists[Opt -> StackAxis][I];
 
         IRIT_ZAP_MEM(&LclData, sizeof(LclData));
         LclData.Opt = Opt;
-        LclData.Body = Body;
-        LclData.DefMap = Body -> Map;
+        LclData.DefMap = BodyMap;
         LclData.BndryThickness = Opt -> Run.SkinThickness;
+        for (D = 0; D < 3; ++D) {
+            LclData.Counts[D] = Counts[D];
+            LclData.GridOrigin[D] = GridOrigin[D];
+        }
 
         fprintf(stderr,
-                "\nGenerating body %d/%d (%s), %d tiles\n",
-                B + 1,
-                Opt -> BodyCount,
-                Body -> Name,
-                Body -> TileCount);
+                "\nGenerating macro body %d/%d, %d x %d x %d tiles\n",
+                B + 1, Opt -> DefMapCount,
+                Counts[0], Counts[1], Counts[2]);
 
         if (UseMicroStructFFD || !UseFFDTileAggregation) {
             IRIT_ZAP_MEM(&Param, sizeof(Param));
-            MV = IritMvarCnvrtTVToMV(Body -> Map);
+            MV = IritMvarCnvrtTVToMV(BodyMap);
             if (MV == NULL)
                 goto Cleanup;
 
@@ -3188,14 +3136,14 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
             Reg -> FFDeformApprox = UseMicroStructFFD ? TRUE : FALSE;
 
             for (D = 0; D < 3; ++D) {
-                Steps[D][0] = Body -> Counts[D];
+                Steps[D][0] = Counts[D];
                 Steps[D][1] = 0;
                 Reg -> TilingSteps[D].TilesPerIntervals = Steps[D];
                 Reg -> TilingSteps[D].Len = 1;
             }
 
             Reg -> PreProcessCBFunc = PreProcessTile;
-            Reg -> PostProcessCBFunc = PostProcessTileBodies;
+            Reg -> PostProcessCBFunc = NULL;
             Reg -> CBFuncData = &LclData;
             BodyMS = IritUserMicroStructComposition(&Param);
 
@@ -3207,23 +3155,21 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
             FFDInfo.FFDCB = PreProcessTileFFD;
             FFDInfo._AuxInfo = &LclData;
             BodyMS = IritTrivFFDTileObjectInTV(NULL,
-                                               Body -> Map,
-                                               Body -> Counts[0],
-                                               Body -> Counts[1],
-                                               Body -> Counts[2],
-                                               FALSE,
-                                               0.0,
-                                               0.0,
-                                               NULL,
-                                               &FFDInfo);
+                                              BodyMap,
+                                              Counts[0],
+                                              Counts[1],
+                                              Counts[2],
+                                              FALSE,
+                                              0.0,
+                                              0.0,
+                                              NULL,
+                                              &FFDInfo);
         }
 
-        if (BodyMS == NULL ||
-            !OptCollectMesh(Opt, BodyMS, MS, Mode == 0))
+        if (BodyMS == NULL)
             goto Cleanup;
-
-        IritPrsrFreeObject(BodyMS);
-        BodyMS = NULL;
+        IritPrsrListObjectAppend(MS, BodyMS);
+        BodyMS = NULL; /* MS owns the appended body object. */
     }
 
     Opt -> LatticeVol = ComputeObjVol(MS) * ScaleVol;
@@ -3252,11 +3198,8 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
                                        1);
         if (Handler < 0)
             goto Cleanup;
-
         IritPrsrPutObjectToHandler(Handler, MS);
         IritPrsrCloseStream(Handler, TRUE);
-        if (!OptValidateMesh(Opt))
-            goto Cleanup;
     }
 
     Ok = TRUE;
@@ -3275,26 +3218,15 @@ Cleanup:
 }
 
 /***************************************************************************
-*                        Multi-Body Geometry Support                        *
+*                   Geometry Adapter / Count Parsing                       *
 ***************************************************************************/
-
-/* Multi-body support used by the optimization driver.  This file is kept
- * separate because it is also convenient to regenerate it independently of
- * the main experimental driver. */
-
-#define OPT_ATTR_TILE     "_opt_tile"
-#define OPT_ATTR_SUBTILE  "_opt_subtile"
-
-IRIT_STATIC_DATA const int
-    OptCross1OwnerOrder[7] = { 6, 5, 4, 3, 2, 1, 0 };
-IRIT_STATIC_DATA const int
-    OptCross2OwnerOrder[7] = { 6, 4, 5, 2, 3, 0, 1 };
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Parses a positive-integer lattice-count list.                           *
+* Parses one or more positive integer values from a lattice-count line.    *
+* Each value supplies the local count for one macro body.                   *
 ***************************************************************************/
-static int OptParseCounts(const char *Text, int **Values, int *Count)
+static int OptParseCountList(const char *Text, int **Values, int *Count)
 {
     const char *P = Text;
     int N = 0;
@@ -3328,8 +3260,7 @@ static int OptParseCounts(const char *Text, int **Values, int *Count)
             int NewCapacity = Capacity == 0 ? 4 : Capacity * 2;
             NewResult = (int *) OptReallocCopy(Result,
                                                 (size_t) Capacity * sizeof(int),
-                                                (size_t) NewCapacity *
-                                                    sizeof(int));
+                                                (size_t) NewCapacity * sizeof(int));
             if (NewResult == NULL)
                 goto Error;
             Result = NewResult;
@@ -3354,202 +3285,176 @@ Error:
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Counts trivariates that represent macro-shape bodies.                   *
+* Loads every macro-shape trivariate and resolves their count lists into    *
+* one unified logical lattice.  Body boundaries remain confined to the     *
+* geometry-generation adapter.                                             *
 ***************************************************************************/
-static int OptCountBodyTVs(const IritPrsrObjectStruct *Obj)
-{
-    int I, Count = 0;
-    const IritTrivTVStruct *TV;
-
-    for (; Obj != NULL; Obj = Obj -> Pnext) {
-        if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
-            for (I = 0; I < IritPrsrListObjectLength(Obj); ++I)
-                Count += OptCountBodyTVs(IritPrsrListObjectGet(Obj, I));
-        }
-        else if (IRIT_PRSR_IS_TRIVAR_OBJ(Obj)) {
-            for (TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext)
-                ++Count;
-        }
-    }
-    return Count;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Copies macro-shape trivariates into the body table.                     *
-***************************************************************************/
-static int OptCopyBodyTVs(OptWorkflowStateStruct *Opt,
-                          const IritPrsrObjectStruct *Obj,
-                          int *BodyIndex,
-                          int *TileOffset)
-{
-    int I;
-    const IritTrivTVStruct *TV;
-
-    for (; Obj != NULL; Obj = Obj -> Pnext) {
-        if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
-            for (I = 0; I < IritPrsrListObjectLength(Obj); ++I)
-                if (!OptCopyBodyTVs(Opt, IritPrsrListObjectGet(Obj, I),
-                                    BodyIndex, TileOffset))
-                    return FALSE;
-        }
-        else if (IRIT_PRSR_IS_TRIVAR_OBJ(Obj)) {
-            for (TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
-                OptBodyStruct *Body = &Opt -> Bodies[*BodyIndex];
-                long long TileCount;
-
-                Body -> Map = IritTrivTVCopy(TV);
-                if (Body -> Map == NULL)
-                    return FALSE;
-                Body -> Map -> Pnext = NULL;
-                snprintf(Body -> Name, sizeof(Body -> Name), "%s%s%d",
-                         Obj -> ObjName != NULL ? Obj -> ObjName : "Body_",
-                         Obj -> ObjName != NULL ? "_" : "", *BodyIndex + 1);
-                for (I = 0; I < 3; ++I)
-                    Body -> Counts[I] = Opt -> Run.BodyCounts[I][*BodyIndex];
-                TileCount = (long long) Body -> Counts[0] * Body -> Counts[1] *
-                            Body -> Counts[2];
-                if (TileCount <= 0 || TileCount > INT_MAX - *TileOffset)
-                    return FALSE;
-                Body -> TileCount = (int) TileCount;
-                IritTrivTVDomain(Body -> Map,
-                                 &Body -> Min[0], &Body -> Max[0],
-                                 &Body -> Min[1], &Body -> Max[1],
-                                 &Body -> Min[2], &Body -> Max[2]);
-                *TileOffset += Body -> TileCount;
-                ++*BodyIndex;
-            }
-        }
-    }
-    return TRUE;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Loads and initializes the multi-body macro-shape layout.                *
-***************************************************************************/
-static int OptLoadBodies(OptWorkflowStateStruct *Opt)
+static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
 {
     const char *FileName = Opt -> Run.MacroShapePath;
     IritPrsrObjectStruct *Objects;
-    int D;
-    int B = 0;
-    int TileOffset = 0;
-    int Axis = -1;
-    int GridOffset = 0;
+    IritPrsrObjectStruct *Obj;
+    IritTrivTVStruct **Tail = &Opt -> DefMap;
+    int FoundCount = 0;
+    int Axis;
+    int D, B;
+    long long TileCount;
 
-    IritPrsrSetFlattenObjects(FALSE);
+    IritPrsrSetFlattenObjects(TRUE);
     Objects = IritPrsrGetDataFiles(&FileName, 1, TRUE, FALSE);
     if (Objects == NULL)
         return FALSE;
-    Opt -> BodyCount = OptCountBodyTVs(Objects);
-    if (Opt -> BodyCount <= 0) {
-        IritPrsrFreeObjectList(Objects);
+
+    for (Obj = Objects; Obj != NULL; Obj = Obj -> Pnext) {
+        IritTrivTVStruct *TV;
+
+        if (!IRIT_PRSR_IS_TRIVAR_OBJ(Obj))
+            continue;
+
+        for (TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
+            IritTrivTVStruct *Copy = IritTrivTVCopy(TV);
+
+            if (Copy == NULL) {
+                IritPrsrFreeObjectList(Objects);
+                IritTrivTVFreeList(Opt -> DefMap);
+                return FALSE;
+            }
+            Copy -> Pnext = NULL;
+            *Tail = Copy;
+            Tail = &Copy -> Pnext;
+            ++FoundCount;
+        }
+    }
+
+    IritPrsrFreeObjectList(Objects);
+    if (FoundCount <= 0 || Opt -> DefMap == NULL) {
+        fprintf(stderr,
+                "Macro shape contains no trivariates; found %d.\n",
+                FoundCount);
         return FALSE;
     }
+    Opt -> DefMapCount = FoundCount;
+
     for (D = 0; D < 3; ++D) {
-        if (Opt -> Run.BodyCountLengths[D] != Opt -> BodyCount) {
+        if (Opt -> Run.LatticeCountListLengths[D] != FoundCount) {
             fprintf(stderr,
-                    "Lattice count list %d has %d values; macro shape has "
+                    "%c count list has %d values, but macro shape has "
                     "%d bodies.\n",
-                    D,
-                    Opt -> Run.BodyCountLengths[D],
-                    Opt -> BodyCount);
-            IritPrsrFreeObjectList(Objects);
+                    "UVW"[D], Opt -> Run.LatticeCountListLengths[D],
+                    FoundCount);
             return FALSE;
         }
     }
-    Opt -> Bodies = (OptBodyStruct *) OptAllocZero((size_t) Opt -> BodyCount,
-                                                 sizeof(OptBodyStruct));
-    if (Opt -> Bodies == NULL ||
-        !OptCopyBodyTVs(Opt, Objects, &B, &TileOffset)) {
-        IritPrsrFreeObjectList(Objects);
-        return FALSE;
-    }
-    IritPrsrFreeObjectList(Objects);
 
     Axis = Opt -> Run.BodyStackAxis;
     for (D = 0; D < 3; ++D) {
-        int I;
         CagdBType Differs = FALSE;
 
-        for (I = 1; I < Opt -> BodyCount; ++I)
-            if (Opt -> Bodies[I].Counts[D] != Opt -> Bodies[0].Counts[D]) {
+        for (B = 1; B < FoundCount; ++B) {
+            if (Opt -> Run.LatticeCountLists[D][B] !=
+                Opt -> Run.LatticeCountLists[D][0]) {
                 Differs = TRUE;
                 break;
             }
-        if (Differs) {
-            if (Opt -> Run.BodyStackAxis >= 0 &&
-                D != Opt -> Run.BodyStackAxis) {
-                fprintf(stderr,
-                        "Body counts differ on %c, but body_stack_axis is "
-                        "%c. Only the selected axis may vary.\n",
-                        "UVW"[D], "UVW"[Opt -> Run.BodyStackAxis]);
-                return FALSE;
-            }
-            if (Opt -> Run.BodyStackAxis < 0) {
-                if (Axis >= 0) {
-                    fprintf(stderr,
-                            "Multi-body counts differ in more than one axis "
-                            "(%c and %c).\n",
-                            "UVW"[Axis], "UVW"[D]);
-                    return FALSE;
-                }
-                Axis = D;
-            }
+        }
+        if (!Differs)
+            continue;
+        if (Axis >= 0 && D != Axis) {
+            fprintf(stderr,
+                    "Body tile counts differ on %c, outside configured "
+                    "stack axis %c.\n", "UVW"[D], "UVW"[Axis]);
+            return FALSE;
+        }
+        if (Axis < 0) {
+            Axis = D;
+        }
+        else if (D != Axis) {
+            fprintf(stderr,
+                    "Body tile counts may differ along only one axis.\n");
+            return FALSE;
         }
     }
-    if (Opt -> BodyCount > 1 && Axis < 0) {
+    if (FoundCount > 1 && Axis < 0) {
         fprintf(stderr,
-                "Multi-body layout is ambiguous: exactly one of U/V/W "
-                "count lists must vary.\n");
+                "Equal body count sets do not reveal their stack direction; "
+                "set body_stack_axis to u, v, or w.\n");
         return FALSE;
     }
     if (Axis < 0)
         Axis = 2;
     Opt -> StackAxis = Axis;
 
-    for (D = 0; D < 3; ++D)
-        Opt -> GlobalCounts[D] = D == Axis ? 0 : Opt -> Bodies[0].Counts[D];
-    for (D = 0; D < Opt -> BodyCount; ++D) {
-        OptBodyStruct *Body = &Opt -> Bodies[D];
+    for (D = 0; D < 3; ++D) {
+        long long Count = 0;
 
-        Body -> GridOrigin[Axis] = GridOffset;
-        if (Body -> Counts[Axis] > INT_MAX - GridOffset)
+        if (D == Axis) {
+            for (B = 0; B < FoundCount; ++B)
+                Count += Opt -> Run.LatticeCountLists[D][B];
+        }
+        else {
+            Count = Opt -> Run.LatticeCountLists[D][0];
+            for (B = 1; B < FoundCount; ++B) {
+                if (Opt -> Run.LatticeCountLists[D][B] != Count) {
+                    fprintf(stderr,
+                            "All bodies must have the same %c tile count "
+                            "when stacking on %c.\n",
+                            "UVW"[D], "UVW"[Axis]);
+                    return FALSE;
+                }
+            }
+        }
+        if (Count <= 0 || Count > INT_MAX)
             return FALSE;
-        GridOffset += Body -> Counts[Axis];
+        if (D == 0)
+            Opt -> Run.LatticeCountU = (int) Count;
+        else if (D == 1)
+            Opt -> Run.LatticeCountV = (int) Count;
+        else
+            Opt -> Run.LatticeCountW = (int) Count;
     }
-    Opt -> GlobalCounts[Axis] = GridOffset;
-    Opt -> TotalTiles = TileOffset;
-    if ((long long) Opt -> GlobalCounts[0] * Opt -> GlobalCounts[1] *
-            Opt -> GlobalCounts[2] != Opt -> TotalTiles)
+
+    TileCount = (long long) Opt -> Run.LatticeCountU *
+                Opt -> Run.LatticeCountV * Opt -> Run.LatticeCountW;
+    if (TileCount <= 0 || TileCount > INT_MAX) {
+        IritTrivTVFree(Opt -> DefMap);
+        Opt -> DefMap = NULL;
         return FALSE;
-    return B == Opt -> BodyCount;
+    }
+
+    Opt -> Lattice.TileCount = (int) TileCount;
+    fprintf(stderr,
+            "Loaded %d macro body%s as one logical %d x %d x %d lattice "
+            "stacked on %c.\n",
+            FoundCount, FoundCount == 1 ? "" : "s",
+            Opt -> Run.LatticeCountU, Opt -> Run.LatticeCountV,
+            Opt -> Run.LatticeCountW, "UVW"[Axis]);
+    return TRUE;
 }
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Writes the legacy lattice CSV header.                                   *
+* Writes the legacy lattice CSV header for the active U/V/W counts.        *
 ***************************************************************************/
 static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 {
     fprintf(F, "lattice_type,%d\n", Opt -> Run.LatticeType);
     fprintf(F, "lattice_counts,%d,%d,%d\n",
-            Opt -> GlobalCounts[0],
-            Opt -> GlobalCounts[1],
-            Opt -> GlobalCounts[2]);
+            Opt -> Run.LatticeCountU,
+            Opt -> Run.LatticeCountV,
+            Opt -> Run.LatticeCountW);
     fprintf(F, "mesh_sample,%d\n", Opt -> Run.MeshSample);
     fprintf(F, "mesh_type,%d\n", OPT_LEGACY_MESH_TYPE);
 }
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Reads and validates the legacy lattice CSV header.                      *
+* Reads and validates the legacy lattice CSV header.                       *
 ***************************************************************************/
 static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 {
     char Line[OPT_MAX_LINE], Extra;
     int LatticeType, U, V, W, MeshSample, MeshType;
+
     if (fgets(Line, sizeof(Line), F) == NULL ||
         sscanf(Line, "lattice_type,%d %c", &LatticeType, &Extra) != 1 ||
         fgets(Line, sizeof(Line), F) == NULL ||
@@ -3559,242 +3464,14 @@ static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
         fgets(Line, sizeof(Line), F) == NULL ||
         sscanf(Line, "mesh_type,%d %c", &MeshType, &Extra) != 1)
         return FALSE;
+
     return LatticeType == Opt -> Run.LatticeType &&
-           U == Opt -> GlobalCounts[0] && V == Opt -> GlobalCounts[1] &&
-           W == Opt -> GlobalCounts[2] &&
+           U == Opt -> Run.LatticeCountU &&
+           V == Opt -> Run.LatticeCountV &&
+           W == Opt -> Run.LatticeCountW &&
            MeshSample == Opt -> Run.MeshSample &&
            MeshType == OPT_LEGACY_MESH_TYPE;
 }
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Returns the body index that owns a global tile index.                   *
-***************************************************************************/
-static int OptBodyForTile(const OptWorkflowStateStruct *Opt, int Tile)
-{
-    int B;
-    int Coord[3];
-
-    Coord[0] = Tile % Opt -> GlobalCounts[0];
-    Tile /= Opt -> GlobalCounts[0];
-    Coord[1] = Tile % Opt -> GlobalCounts[1];
-    Coord[2] = Tile / Opt -> GlobalCounts[1];
-    for (B = 0; B < Opt -> BodyCount; ++B) {
-        const OptBodyStruct *Body = &Opt -> Bodies[B];
-        int Axis = Opt -> StackAxis;
-
-        if (Coord[Axis] >= Body -> GridOrigin[Axis] &&
-            Coord[Axis] < Body -> GridOrigin[Axis] + Body -> Counts[Axis])
-            return B;
-    }
-    return -1;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Maps one body-local tile coordinate into the combined flat 3D grid.      *
-***************************************************************************/
-static int OptGlobalTileIndex(const OptWorkflowStateStruct *Opt,
-                              const OptBodyStruct *Body,
-                              int U,
-                              int V,
-                              int W)
-{
-    int Coord[3];
-
-    if (U < 0 || U >= Body -> Counts[0] ||
-        V < 0 || V >= Body -> Counts[1] ||
-        W < 0 || W >= Body -> Counts[2])
-        OptFatal("Body-local tile coordinate outside configured grid");
-    Coord[0] = Body -> GridOrigin[0] + U;
-    Coord[1] = Body -> GridOrigin[1] + V;
-    Coord[2] = Body -> GridOrigin[2] + W;
-    return Coord[0] + Opt -> GlobalCounts[0] *
-        (Coord[1] + Opt -> GlobalCounts[1] * Coord[2]);
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Tags generated tile geometry with tile ownership attributes.            *
-***************************************************************************/
-static void OptTagTile(IritPrsrObjectStruct *Obj,
-                       int Tile, int *GeomSub)
-{
-    int I;
-    if (Obj == NULL)
-        return;
-    if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
-        for (I = 0; I < IritPrsrListObjectLength(Obj); ++I)
-            OptTagTile(IritPrsrListObjectGet(Obj, I), Tile, GeomSub);
-    }
-    else {
-        IritMiscAttrSetObjectIntAttrib(Obj, OPT_ATTR_TILE, Tile);
-        IritMiscAttrSetObjectIntAttrib(Obj, OPT_ATTR_SUBTILE, (*GeomSub)++);
-    }
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Appends one exported mesh-patch ownership record.                       *
-***************************************************************************/
-static int OptAppendMeshOwner(OptWorkflowStateStruct *Opt,
-                              int Tile,
-                              int SubTile)
-{
-    if (Opt -> MeshTopologyInitialized) {
-        if (Opt -> MeshOwnerCursor >= Opt -> MeshOwnerCount ||
-            Opt -> MeshOwners[Opt -> MeshOwnerCursor].Tile != Tile ||
-            Opt -> MeshOwners[Opt -> MeshOwnerCursor].SubTile != SubTile) {
-            fprintf(stderr,
-                    "Mesh ownership changed at patch %d (tile=%d, "
-                    "subtile=%d).\n",
-                    Opt -> MeshOwnerCursor, Tile, SubTile);
-            return FALSE;
-        }
-        ++Opt -> MeshOwnerCursor;
-        return TRUE;
-    }
-
-    if (Opt -> MeshOwnerCount == Opt -> MeshOwnerCapacity) {
-        int NewCapacity = Opt -> MeshOwnerCapacity == 0 ? 256 :
-                          Opt -> MeshOwnerCapacity * 2;
-        OptMeshOwnerStruct *NewOwners = (OptMeshOwnerStruct *)
-            OptReallocCopy(Opt -> MeshOwners,
-                           (size_t) Opt -> MeshOwnerCapacity *
-                               sizeof(*NewOwners),
-                           (size_t) NewCapacity * sizeof(*NewOwners));
-        if (NewOwners == NULL)
-            return FALSE;
-        Opt -> MeshOwners = NewOwners;
-        Opt -> MeshOwnerCapacity = NewCapacity;
-    }
-    Opt -> MeshOwners[Opt -> MeshOwnerCount].Tile = Tile;
-    Opt -> MeshOwners[Opt -> MeshOwnerCount].SubTile = SubTile;
-    ++Opt -> MeshOwnerCount;
-    ++Opt -> MeshOwnerCursor;
-    return TRUE;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Collects generated geometry and records patch ownership.                *
-***************************************************************************/
-static int OptCollectMesh(OptWorkflowStateStruct *Opt,
-                          IritPrsrObjectStruct *Obj,
-                          IritPrsrObjectStruct *Out,
-                          int SaveOwners)
-{
-    int I, Tile, SubTile;
-    IritTrivTVStruct *TV;
-    if (Obj == NULL)
-        return TRUE;
-    if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
-        for (I = 0; I < IritPrsrListObjectLength(Obj); ++I)
-            if (!OptCollectMesh(Opt, IritPrsrListObjectGet(Obj, I), Out,
-                                SaveOwners))
-                return FALSE;
-        return TRUE;
-    }
-    Tile = IritMiscAttrGetObjectIntAttrib(Obj, OPT_ATTR_TILE);
-    SubTile = IritMiscAttrGetObjectIntAttrib(Obj, OPT_ATTR_SUBTILE);
-
-    if (SaveOwners && IRIT_PRSR_IS_TRIVAR_OBJ(Obj) &&
-        (Opt -> Run.LatticeType == 0 || Opt -> Run.LatticeType == 1)) {
-        /* Cross1 export order is core,U-,U+,V-,V+,W-,W+, while its
-         * design order is W+,W-,V+,V-,U+,U-,core. Cross2 exports
-         * core,U-,U+,V-,V+,W-,W+. Map both to design indices. */
-        const int *Order = Opt -> Run.LatticeType == 0 ?
-            OptCross1OwnerOrder : OptCross2OwnerOrder;
-
-        if (Tile < 0 || Tile >= Opt -> TotalTiles)
-            return FALSE;
-        for (I = 0, TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext, ++I) {
-            if (I >= 7 || !OptAppendMeshOwner(Opt, Tile, Order[I]))
-                return FALSE;
-            IritPrsrListObjectAppend(
-                Out, IritPrsrGenTRIVARObject(IritTrivTVCopy(TV)));
-        }
-        return I == 7;
-    }
-
-    if (SaveOwners && IRIT_PRSR_IS_TRIVAR_OBJ(Obj) &&
-        Opt -> Run.LatticeType == 2) {
-        /* DiagTile1 returns three eight-TV objects in this order:
-         * center joints, diagonal rods, corner joints. Each internal list
-         * was built with IRIT_LIST_PUSH, so vertex order is 7 down to 0.
-         * Design variables occupy rod indices 8..15 (LDef == 8). */
-        int GroupBase;
-
-        if (Tile < 0 || Tile >= Opt -> TotalTiles ||
-            SubTile < 0 || SubTile > 2)
-            return FALSE;
-        GroupBase = SubTile * 8;
-        for (I = 0, TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext, ++I) {
-            if (I >= 8 ||
-                !OptAppendMeshOwner(Opt, Tile, GroupBase + (7 - I)))
-                return FALSE;
-            IritPrsrListObjectAppend(
-                Out, IritPrsrGenTRIVARObject(IritTrivTVCopy(TV)));
-        }
-        return I == 8;
-    }
-
-    if (SaveOwners && (Tile < 0 || Tile >= Opt -> TotalTiles ||
-                       SubTile < 0 || SubTile >= Opt -> L ||
-                       !OptAppendMeshOwner(Opt, Tile, SubTile)))
-        return FALSE;
-    IritPrsrListObjectAppend(Out, IritPrsrCopyObject(NULL, Obj, TRUE));
-    return TRUE;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Tags a generated tile after microstructure placement.                   *
-***************************************************************************/
-static IritPrsrObjectStruct *PostProcessTileBodies(
-                            IritPrsrObjectStruct *Tile,
-                            IritUserMicroPostProcessTileCBStruct *CB)
-{
-    UserMicroLocalDataStruct *Local =
-        (UserMicroLocalDataStruct *) CB -> CBFuncData;
-    OptBodyStruct *Body = Local -> Body;
-    int SubTile = 0;
-    int TileIndex = OptGlobalTileIndex(Local -> Opt,
-                                       Body,
-                                       CB -> TileIdxs[0],
-                                       CB -> TileIdxs[1],
-                                       CB -> TileIdxs[2]);
-    OptTagTile(Tile, TileIndex, &SubTile);
-    return Tile;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Validates all exported mesh ownership records.                          *
-***************************************************************************/
-static int OptValidateMesh(OptWorkflowStateStruct *Opt)
-{
-    int I;
-    if (Opt -> MeshOwnerCount <= 0) {
-        fprintf(stderr, "Generated mesh contains no owned geometry patches.\n");
-        return FALSE;
-    }
-    if (Opt -> MeshOwnerCursor != Opt -> MeshOwnerCount) {
-        fprintf(stderr,
-                "Mesh patch count changed: generated=%d, expected=%d.\n",
-                Opt -> MeshOwnerCursor, Opt -> MeshOwnerCount);
-        return FALSE;
-    }
-    for (I = 0; I < Opt -> MeshOwnerCount; ++I)
-        if (Opt -> MeshOwners[I].Tile < 0 ||
-            Opt -> MeshOwners[I].Tile >= Opt -> TotalTiles ||
-            Opt -> MeshOwners[I].SubTile < 0 ||
-            Opt -> MeshOwners[I].SubTile >= Opt -> L)
-            return FALSE;
-    return TRUE;
-}
-
-
 
 /***************************************************************************
 *                     Simulation Data and Mesh Parsing                      *
@@ -3811,24 +3488,19 @@ static int OptValidateMesh(OptWorkflowStateStruct *Opt)
 * RETURN VALUE:                                                            *
 *   int: TRUE if the file was parsed successfully, FALSE otherwise.        *
 ***************************************************************************/
-
 static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
 {
     FILE *F;
     char Line[OPT_MAX_LINE];
-    int NodeIndex = 0, ElementIndex = 0;
-    CagdBType FirstRead;
     enum { SEC_NONE, SEC_NODE, SEC_ELEMENT } CurrentSection = SEC_NONE;
 
-    if ((Opt -> Nodes.Count == 0) != (Opt -> Elements.Count == 0)) {
-        fprintf(stderr, "INP topology is only partially initialized.\n");
-        return 0;
-    }
-    FirstRead = Opt -> Nodes.Count == 0;
+    if (Opt == NULL || INPPath == NULL)
+        return FALSE;
 
+    FEMModelReset(&Opt -> FEM);
     F = fopen(INPPath, "r");
     if (F == NULL)
-        return 0;
+        return FALSE;
 
     while (fgets(Line, sizeof(Line), F) != NULL) {
         char *P = OptTrim(Line);
@@ -3848,100 +3520,62 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
 
         if (CurrentSection == SEC_NODE) {
             char *Tok;
-            int Col = 0;
             char *Parts[4] = { NULL, NULL, NULL, NULL };
+            int Col = 0;
             OptNodeStruct Node;
 
             IRIT_ZAP_MEM(&Node, sizeof(Node));
-
             Tok = strtok(P, ",");
             while (Tok != NULL && Col < 4) {
                 Parts[Col++] = OptTrim(Tok);
                 Tok = strtok(NULL, ",");
             }
 
-            if (Col >= 4) {
+            if (Col == 4) {
                 Node.Id = atoi(Parts[0]);
-                Node.X = (CagdRType)atof(Parts[1]);
-                Node.Y = (CagdRType)atof(Parts[2]);
-                Node.Z = (CagdRType)atof(Parts[3]);
-                if (FirstRead) {
-                    if (!NodeArrayPush(&Opt -> Nodes, &Node)) {
-                        fclose(F);
-                        return 0;
-                    }
-                }
-                else if (NodeIndex >= Opt -> Nodes.Count ||
-                         Opt -> Nodes.Items[NodeIndex].Id != Node.Id) {
-                    fprintf(stderr,
-                            "INP node topology changed at row %d.\n",
-                            NodeIndex + 1);
-                    fclose(F);
-                    return 0;
-                }
-                else {
-                    Opt -> Nodes.Items[NodeIndex].X = Node.X;
-                    Opt -> Nodes.Items[NodeIndex].Y = Node.Y;
-                    Opt -> Nodes.Items[NodeIndex].Z = Node.Z;
-                }
-                ++NodeIndex;
+                Node.X = (CagdRType) atof(Parts[1]);
+                Node.Y = (CagdRType) atof(Parts[2]);
+                Node.Z = (CagdRType) atof(Parts[3]);
+                if (Node.Id <= 0 || !FEMNodePush(&Opt -> FEM, &Node))
+                    goto Fail;
             }
         }
         else if (CurrentSection == SEC_ELEMENT) {
             char *Tok;
-            int Col = 0;
             OptElementStruct Elem;
 
             IRIT_ZAP_MEM(&Elem, sizeof(Elem));
             Tok = strtok(P, ",");
-            while (Tok != NULL && Col < 9) {
-                int Value = atoi(OptTrim(Tok));
-                if (Col == 0)
-                    Elem.Id = Value;
-                else
-                    Elem.NodeIds[Col - 1] = Value;
-                ++Col;
-                Tok = strtok(NULL, ",");
+            if (Tok == NULL)
+                continue;
+            Elem.Id = atoi(OptTrim(Tok));
+
+            while ((Tok = strtok(NULL, ",")) != NULL &&
+                   Elem.NodeCount < OPT_C3D8_NODE_COUNT) {
+                int NodeId = atoi(OptTrim(Tok));
+                if (NodeId <= 0)
+                    goto Fail;
+                Elem.NodeIds[Elem.NodeCount++] = NodeId;
             }
-            if (Elem.Id > 0 && Col == 9 && Tok == NULL) {
-                if (FirstRead) {
-                    if (!ElementArrayPush(&Opt -> Elements, &Elem)) {
-                        fclose(F);
-                        return 0;
-                    }
-                }
-                else if (ElementIndex >= Opt -> Elements.Count ||
-                         Opt -> Elements.Items[ElementIndex].Id != Elem.Id ||
-                         memcmp(Opt -> Elements.Items[ElementIndex].NodeIds,
-                                Elem.NodeIds,
-                                sizeof(Elem.NodeIds)) != 0) {
-                    fprintf(stderr,
-                            "INP element topology changed at row %d.\n",
-                            ElementIndex + 1);
-                    fclose(F);
-                    return 0;
-                }
-                ++ElementIndex;
-            }
-            else if (Elem.Id > 0) {
+
+            if (Elem.Id <= 0 || Elem.NodeCount != OPT_C3D8_NODE_COUNT) {
                 fprintf(stderr,
-                        "Expected one C3D8 element ID and eight node IDs.\n");
-                fclose(F);
-                return 0;
+                        "Invalid C3D8 element %d in %s: %d node IDs, expected %d.\n",
+                        Elem.Id, INPPath, Elem.NodeCount, OPT_C3D8_NODE_COUNT);
+                goto Fail;
             }
+            if (!FEMElementPush(&Opt -> FEM, &Elem))
+                goto Fail;
         }
     }
 
     fclose(F);
-    if (NodeIndex != Opt -> Nodes.Count ||
-        ElementIndex != Opt -> Elements.Count) {
-        fprintf(stderr,
-                "INP topology count changed: nodes=%d/%d, elements=%d/%d.\n",
-                NodeIndex, Opt -> Nodes.Count,
-                ElementIndex, Opt -> Elements.Count);
-        return 0;
-    }
-    return 1;
+    return Opt -> FEM.NodeCount > 0 && Opt -> FEM.ElementCount > 0;
+
+Fail:
+    fclose(F);
+    FEMModelReset(&Opt -> FEM);
+    return FALSE;
 }
 
 /***************************************************************************
@@ -4054,34 +3688,31 @@ Done:
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-* Initializes per-run containers, body layout, tile topology, and results. *
+* Initializes per-run containers, macro shape, tile topology, and results. *
 ***************************************************************************/
-
 static void InitializeWorkflowState(OptWorkflowStateStruct *Opt)
 {
     OptMakeRunFolderName(Opt -> FolderName);
-    IRIT_ZAP_MEM(&Opt -> Nodes, sizeof(Opt -> Nodes));
-    IRIT_ZAP_MEM(&Opt -> Elements, sizeof(Opt -> Elements));
+    IRIT_ZAP_MEM(&Opt -> FEM, sizeof(Opt -> FEM));
+    IRIT_ZAP_MEM(&Opt -> Lattice, sizeof(Opt -> Lattice));
     IRIT_ZAP_MEM(&Opt -> SedData, sizeof(Opt -> SedData));
+    IRIT_ZAP_MEM(&Opt -> VolumeData, sizeof(Opt -> VolumeData));
 
     Opt -> LastThicknessChange = 1.0e30;
     Opt -> ConsecutiveSmallChanges = 0;
 
     ResolveLatticeLayout(Opt);
-    if (!OptLoadBodies(Opt))
-        OptFatal("Cannot initialize body layout");
+    if (!OptLoadDefMap(Opt))
+        OptFatal("Cannot initialize macro-shape deformation maps");
 
-    /*
-     * Build the persistent tile/subtile hierarchy ONCE.
-     * Thickness starts at InitialThickness and is changed later only by
-     * design-update functions. ANSYS-derived fields are refreshed after
-     * every solve without rebuilding this structure.
-     */
-    if (!InitTileStructure(Opt))
-        OptFatal("Cannot initialize persistent TileStructure");
+    if (!InitLatticeModel(Opt))
+        OptFatal("Cannot initialize persistent lattice model");
+
+    /* Geometric neighbour discovery is also invariant and is done once. */
+    if (!BuildNeighbourGroups(Opt))
+        OptFatal("Cannot initialize persistent neighbour groups");
 
     InitOrResetResultsArray(Opt);
-
 }
 
 /***************************************************************************
@@ -4137,68 +3768,151 @@ static void InitOrResetResultsArray(OptWorkflowStateStruct *Opt)
 * DESCRIPTION:                                                             *
 * Creates the persistent tile/subtile hierarchy and initial thicknesses.   *
 ***************************************************************************/
-
-static int InitTileStructure(OptWorkflowStateStruct *Opt)
+static int InitLatticeModel(OptWorkflowStateStruct *Opt)
 {
+    int U, V, W;
     int TileCount;
-    int T;
 
-    /*
-     * This is a true one-time initialization.  Re-entering it would hide
-     * a workflow error, so an existing structure is simply left untouched.
-     */
-    if (Opt -> TileStructure != NULL)
-        return 1;
+    if (Opt -> Lattice.Tiles != NULL)
+        return TRUE;
 
-    TileCount = Opt -> TotalTiles;
+    TileCount = Opt -> Lattice.TileCount;
     if (TileCount <= 0 || Opt -> L <= 0)
-        return 0;
+        return FALSE;
 
-    Opt -> TileStructure =
-        (OptTileStruct *) OptAllocZero((size_t) TileCount,
-                                       sizeof(OptTileStruct));
-    if (Opt -> TileStructure == NULL)
-        return 0;
+    Opt -> Lattice.Tiles =
+        (OptTileStruct *) OptAllocZero((size_t) TileCount, sizeof(OptTileStruct));
+    if (Opt -> Lattice.Tiles == NULL)
+        return FALSE;
 
-    for (T = 0; T < TileCount; ++T) {
-        OptTileStruct *Tile = &Opt -> TileStructure[T];
+    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
+                int L;
+                int TileIndex = U + Opt -> Run.LatticeCountU *
+                    (V + Opt -> Run.LatticeCountV * W);
+                OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
 
-        Tile -> SubTileCount = Opt -> L;
-        Tile -> SubTiles =
-            (OptSubTileStruct *) OptAllocZero((size_t) Opt -> L,
-                                              sizeof(OptSubTileStruct));
-        if (Tile -> SubTiles == NULL) {
-            DestroyTileStructure(Opt);
-            return 0;
-        }
+                Tile -> SubTileCount = Opt -> L;
+                Tile -> SubTiles = (OptSubTileStruct *) OptAllocZero(
+                    (size_t) Opt -> L, sizeof(OptSubTileStruct));
+                if (Tile -> SubTiles == NULL) {
+                    DestroyLatticeModel(Opt);
+                    return FALSE;
+                }
 
-        /* Tile identity/topology does not change during optimization. */
-        snprintf(Tile -> Name,
-                 sizeof(Tile -> Name),
-                 "Body_%d_Tile_%d",
-                 OptBodyForTile(Opt, T) + 1,
-                 T);
+                snprintf(Tile -> Name, sizeof(Tile -> Name),
+                         "Tile_%d_%d_%d", W, V, U);
 
-        /*
-         * Initial design state.  From this point onward Thickness is changed
-         * only by design-update functions and interface matching such
-         * as neighbour matching / volume correction).
-         */
-        {
-            int L;
-            for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L)
-                Tile -> SubTiles[L].Thickness = Opt -> Run.InitialThickness;
+                for (L = 0; L < Tile -> SubTileCount; ++L)
+                    Tile -> SubTiles[L].FirstElementIndex = -1;
+                for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L)
+                    Tile -> SubTiles[L].Thickness = Opt -> Run.InitialThickness;
+            }
         }
     }
 
-    return 1;
+    return TRUE;
 }
+
+static int InitializePersistentTopology(OptWorkflowStateStruct *Opt)
+{
+    if (Opt -> Lattice.FEMTopologyBound)
+        return TRUE;
+
+    if (!ReadINP(Opt, Opt -> Config.InpFile)) {
+        fprintf(stderr, "Failed to parse initial INP topology: %s\n",
+                Opt -> Config.InpFile);
+        return FALSE;
+    }
+    if (!BindElementsToSubTiles(Opt)) {
+        FEMModelReset(&Opt -> FEM);
+        return FALSE;
+    }
+
+    Opt -> Lattice.FEMTopologyBound = TRUE;
+    fprintf(stderr,
+            "Persistent topology initialized: %d nodes, %d elements, "
+            "%d tiles, %d neighbour groups.\n",
+            Opt -> FEM.NodeCount, Opt -> FEM.ElementCount,
+            Opt -> Lattice.TileCount, Opt -> Lattice.NeighbourGroupCount);
+    return TRUE;
+}
+
+static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt)
+{
+    long long ExpectedElements;
+    int B, U, V, W, L, X;
+    int ElementIndex = 0;
+
+    ExpectedElements = (long long) Opt -> Lattice.TileCount *
+        Opt -> L * Opt -> MeshSample;
+    if (ExpectedElements > INT_MAX ||
+        Opt -> FEM.ElementCount != (int) ExpectedElements) {
+        fprintf(stderr,
+                "Mesh/order mismatch: elements=%d, expected=%lld "
+                "(%d tiles x %d subtiles x %d elements/subtile).\n",
+                Opt -> FEM.ElementCount, ExpectedElements,
+                Opt -> Lattice.TileCount, Opt -> L, Opt -> MeshSample);
+        return FALSE;
+    }
+
+    /* The INP exporter emits bodies in IRIT-call order and tiles in each
+     * body's local W/V/U order.  Convert that export order back into the
+     * unified logical lattice without adding body ownership to the model. */
+    for (B = 0; B < Opt -> DefMapCount; ++B) {
+        int Counts[3];
+        int Origin[3] = { 0, 0, 0 };
+        int I, D;
+
+        for (D = 0; D < 3; ++D)
+            Counts[D] = Opt -> Run.LatticeCountLists[D][B];
+        for (I = 0; I < B; ++I)
+            Origin[Opt -> StackAxis] +=
+                Opt -> Run.LatticeCountLists[Opt -> StackAxis][I];
+
+        for (W = 0; W < Counts[2]; ++W) {
+            for (V = 0; V < Counts[1]; ++V) {
+                for (U = 0; U < Counts[0]; ++U) {
+                    int GlobalU = Origin[0] + U;
+                    int GlobalV = Origin[1] + V;
+                    int GlobalW = Origin[2] + W;
+                    int TileIndex = GlobalU + Opt -> Run.LatticeCountU *
+                        (GlobalV + Opt -> Run.LatticeCountV * GlobalW);
+                OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
+
+                for (L = 0; L < Tile -> SubTileCount; ++L) {
+                    OptSubTileStruct *SubTile = &Tile -> SubTiles[L];
+
+                    SubTile -> FirstElementIndex = ElementIndex;
+                    SubTile -> ElementCount = Opt -> MeshSample;
+                    SubTile -> ElementIds = (int *) OptAllocZero(
+                        (size_t) SubTile -> ElementCount, sizeof(int));
+                    if (SubTile -> ElementIds == NULL)
+                        return FALSE;
+
+                    for (X = 0; X < SubTile -> ElementCount; ++X) {
+                        if (ElementIndex >= Opt -> FEM.ElementCount)
+                            return FALSE;
+                        SubTile -> ElementIds[X] =
+                            Opt -> FEM.Elements[ElementIndex].Id;
+                        ++ElementIndex;
+                    }
+                }
+                }
+            }
+        }
+    }
+
+    return ElementIndex == Opt -> FEM.ElementCount;
+}
+
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Clears analysis values from the previous solver result while          *
-* preserving the persistent tile/subtile topology, element associations,  *
-* and thickness design state.                                              *
+* preserving thickness, permanent element IDs, element index ranges, and   *
+* all lattice/FEM topology.                                                *
 *                                                                          *
 * PARAMETERS:                                                              *
 *   Opt: Active optimization workflow state.                               *
@@ -4210,12 +3924,11 @@ static void ClearTileAnalysisData(OptWorkflowStateStruct *Opt)
 {
     int T, S;
 
-    if (Opt == NULL || Opt -> TileStructure == NULL)
+    if (Opt == NULL || Opt -> Lattice.Tiles == NULL)
         return;
 
-    for (T = 0; T < Opt -> TotalTiles; ++T) {
-        OptTileStruct *Tile = &Opt -> TileStructure[T];
-
+    for (T = 0; T < Opt -> Lattice.TileCount; ++T) {
+        OptTileStruct *Tile = &Opt -> Lattice.Tiles[T];
         Tile -> Volume = 0.0;
         Tile -> StrainEnergy = 0.0;
         Tile -> ComplianceContribution = 0.0;
@@ -4223,8 +3936,7 @@ static void ClearTileAnalysisData(OptWorkflowStateStruct *Opt)
 
         for (S = 0; S < Tile -> SubTileCount; ++S) {
             OptSubTileStruct *SubTile = &Tile -> SubTiles[S];
-
-            /* Preserve FE ownership and Thickness; both are persistent. */
+            /* Preserve Thickness, FirstElementIndex, ElementIds and ElementCount. */
             SubTile -> SED = 0.0;
             SubTile -> MaxSED = 0.0;
             SubTile -> Volume = 0.0;
@@ -4240,52 +3952,61 @@ static void ClearTileAnalysisData(OptWorkflowStateStruct *Opt)
 * DESCRIPTION:                                                             *
 * Releases every tile, subtile, and finite-element ownership list.         *
 ***************************************************************************/
-
-static void DestroyTileStructure(OptWorkflowStateStruct *Opt)
+static void DestroyLatticeModel(OptWorkflowStateStruct *Opt)
 {
-    int TileCount, T, S;
+    int T, S, G;
 
-    if (Opt -> TileStructure == NULL)
+    if (Opt == NULL)
         return;
 
-    TileCount = Opt -> TotalTiles;
-    for (T = 0; T < TileCount; ++T) {
-        if (Opt -> TileStructure[T].SubTiles != NULL) {
-            for (S = 0; S < Opt -> TileStructure[T].SubTileCount; ++S) {
-                if (Opt -> TileStructure[T].SubTiles[S].Elements != NULL)
-                    IritFree(Opt -> TileStructure[T].SubTiles[S].Elements);
+    if (Opt -> Lattice.Tiles != NULL) {
+        for (T = 0; T < Opt -> Lattice.TileCount; ++T) {
+            OptTileStruct *Tile = &Opt -> Lattice.Tiles[T];
+            if (Tile -> SubTiles != NULL) {
+                for (S = 0; S < Tile -> SubTileCount; ++S) {
+                    if (Tile -> SubTiles[S].ElementIds != NULL)
+                        IritFree(Tile -> SubTiles[S].ElementIds);
+                }
+                IritFree(Tile -> SubTiles);
             }
-            IritFree(Opt -> TileStructure[T].SubTiles);
         }
+        IritFree(Opt -> Lattice.Tiles);
     }
 
-    IritFree(Opt -> TileStructure);
-    Opt -> TileStructure = NULL;
+    for (G = 0; G < Opt -> Lattice.NeighbourGroupCount; ++G) {
+        if (Opt -> Lattice.NeighbourGroups[G].SubTileIds != NULL)
+            IritFree(Opt -> Lattice.NeighbourGroups[G].SubTileIds);
+    }
+    if (Opt -> Lattice.NeighbourGroups != NULL)
+        IritFree(Opt -> Lattice.NeighbourGroups);
+
+    IRIT_ZAP_MEM(&Opt -> Lattice, sizeof(Opt -> Lattice));
 }
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Releases all allocations owned by one optimization workflow.             *
 ***************************************************************************/
-
 static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
 {
-    NodeArrayReset(&Opt -> Nodes);
-    ElementArrayReset(&Opt -> Elements);
+    FEMModelReset(&Opt -> FEM);
     ScalarFieldReset(&Opt -> SedData);
-    DestroyTileStructure(Opt);
+    ScalarFieldReset(&Opt -> VolumeData);
+    DestroyLatticeModel(Opt);
+
+    if (Opt -> DefMap != NULL) {
+        IritTrivTVFreeList(Opt -> DefMap);
+        Opt -> DefMap = NULL;
+        Opt -> DefMapCount = 0;
+    }
     {
-        int B;
-        for (B = 0; B < Opt -> BodyCount; ++B)
-            IritTrivTVFree(Opt -> Bodies[B].Map);
-        if (Opt -> Bodies)
-            IritFree(Opt -> Bodies);
-        if (Opt -> MeshOwners)
-            IritFree(Opt -> MeshOwners);
-        for (B = 0; B < 3; ++B)
-            if (Opt -> Run.BodyCounts[B])
-                IritFree(Opt -> Run.BodyCounts[B]);
-        ScalarFieldReset(&Opt -> VolumeData);
+        int D;
+        for (D = 0; D < 3; ++D) {
+            if (Opt -> Run.LatticeCountLists[D])
+                IritFree(Opt -> Run.LatticeCountLists[D]);
+            Opt -> Run.LatticeCountLists[D] = NULL;
+            Opt -> Run.LatticeCountListLengths[D] = 0;
+        }
     }
 
     if (Opt -> Results != NULL) {
@@ -4298,80 +4019,53 @@ static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
 * DESCRIPTION:                                                             *
 * Releases the node array and restores an empty reusable state.            *
 ***************************************************************************/
-
-static void NodeArrayReset(OptNodeArrayStruct *Arr)
+static void FEMModelReset(OptFEMModelStruct *FEM)
 {
-    if (Arr -> Items != NULL)
-        IritFree(Arr -> Items);
-    Arr -> Items = NULL;
-    Arr -> Count = 0;
-    Arr -> Capacity = 0;
+    if (FEM == NULL)
+        return;
+    if (FEM -> Nodes != NULL)
+        IritFree(FEM -> Nodes);
+    if (FEM -> Elements != NULL)
+        IritFree(FEM -> Elements);
+    IRIT_ZAP_MEM(FEM, sizeof(*FEM));
 }
 
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Releases the element array and restores an empty reusable state.         *
-***************************************************************************/
-
-static void ElementArrayReset(OptElementArrayStruct *Arr)
+static int FEMNodePush(OptFEMModelStruct *FEM, const OptNodeStruct *Node)
 {
-    if (Arr -> Items != NULL)
-        IritFree(Arr -> Items);
-    Arr -> Items = NULL;
-    Arr -> Count = 0;
-    Arr -> Capacity = 0;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Appends a node, growing the contiguous node array when required.         *
-***************************************************************************/
-
-static int NodeArrayPush(OptNodeArrayStruct *Arr, const OptNodeStruct *Node)
-{
-    if (Arr -> Count >= Arr -> Capacity) {
-        int NewCap = Arr -> Capacity == 0 ? 1024 : Arr -> Capacity * 2;
-        OptNodeStruct *NewItems =
-            (OptNodeStruct *) OptReallocCopy(Arr -> Items,
-                                             (size_t) Arr -> Capacity *
-                                                 sizeof(OptNodeStruct),
-                                             (size_t) NewCap *
-                                                 sizeof(OptNodeStruct));
+    if (FEM -> NodeCount >= FEM -> NodeCapacity) {
+        int NewCap = FEM -> NodeCapacity == 0 ? 1024 : FEM -> NodeCapacity * 2;
+        OptNodeStruct *NewItems = (OptNodeStruct *) OptReallocCopy(
+            FEM -> Nodes,
+            (size_t) FEM -> NodeCapacity * sizeof(OptNodeStruct),
+            (size_t) NewCap * sizeof(OptNodeStruct));
         if (NewItems == NULL)
-            return 0;
-        Arr -> Items = NewItems;
-        Arr -> Capacity = NewCap;
+            return FALSE;
+        FEM -> Nodes = NewItems;
+        FEM -> NodeCapacity = NewCap;
     }
-
-    Arr -> Items[Arr -> Count++] = *Node;
-    return 1;
+    FEM -> Nodes[FEM -> NodeCount++] = *Node;
+    return TRUE;
 }
 
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Appends an element, growing the contiguous element array as needed.      *
-***************************************************************************/
-
-static int ElementArrayPush(OptElementArrayStruct *Arr,
-                            const OptElementStruct *Elem)
+static int FEMElementPush(OptFEMModelStruct *FEM,
+                          const OptElementStruct *Elem)
 {
-    if (Arr -> Count >= Arr -> Capacity) {
-        int NewCap = Arr -> Capacity == 0 ? 1024 : Arr -> Capacity * 2;
-        OptElementStruct *NewItems =
-            (OptElementStruct *) OptReallocCopy(Arr -> Items,
-                                                (size_t) Arr -> Capacity *
-                                                    sizeof(OptElementStruct),
-                                                (size_t) NewCap *
-                                                    sizeof(OptElementStruct));
+    if (FEM -> ElementCount >= FEM -> ElementCapacity) {
+        int NewCap = FEM -> ElementCapacity == 0 ?
+            1024 : FEM -> ElementCapacity * 2;
+        OptElementStruct *NewItems = (OptElementStruct *) OptReallocCopy(
+            FEM -> Elements,
+            (size_t) FEM -> ElementCapacity * sizeof(OptElementStruct),
+            (size_t) NewCap * sizeof(OptElementStruct));
         if (NewItems == NULL)
-            return 0;
-        Arr -> Items = NewItems;
-        Arr -> Capacity = NewCap;
+            return FALSE;
+        FEM -> Elements = NewItems;
+        FEM -> ElementCapacity = NewCap;
     }
-
-    Arr -> Items[Arr -> Count++] = *Elem;
-    return 1;
+    FEM -> Elements[FEM -> ElementCount++] = *Elem;
+    return TRUE;
 }
+
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
@@ -4465,30 +4159,6 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
 * DESCRIPTION:                                                             *
 * Associates one finite element with a subtile, growing its pointer list.  *
 ***************************************************************************/
-
-static int SubTileAddElementPtr(OptSubTileStruct *SubTile,
-                                OptElementStruct *Elem)
-{
-    if (SubTile -> ElementCount >= SubTile -> ElementCapacity) {
-        int NewCap = SubTile -> ElementCapacity == 0 ?
-            16 : SubTile -> ElementCapacity * 2;
-        OptElementStruct **NewItems =
-            (OptElementStruct **) OptReallocCopy(
-                                        SubTile -> Elements,
-                                        (size_t) SubTile -> ElementCapacity *
-                                            sizeof(OptElementStruct *),
-                                        (size_t) NewCap *
-                                            sizeof(OptElementStruct *));
-        if (NewItems == NULL)
-            return 0;
-        SubTile -> Elements = NewItems;
-        SubTile -> ElementCapacity = NewCap;
-    }
-
-    SubTile -> Elements[SubTile -> ElementCount++] = Elem;
-    return 1;
-}
-
 /***************************************************************************
 *                           Unified Input Parsing                           *
 ***************************************************************************/
@@ -4554,10 +4224,10 @@ static void OptFreeConfig(OptConfigStruct *Config)
     int D;
 
     for (D = 0; D < 3; ++D) {
-        if (Config -> Run.BodyCounts[D] != NULL)
-            IritFree(Config -> Run.BodyCounts[D]);
-        Config -> Run.BodyCounts[D] = NULL;
-        Config -> Run.BodyCountLengths[D] = 0;
+        if (Config -> Run.LatticeCountLists[D] != NULL)
+            IritFree(Config -> Run.LatticeCountLists[D]);
+        Config -> Run.LatticeCountLists[D] = NULL;
+        Config -> Run.LatticeCountListLengths[D] = 0;
     }
 }
 
@@ -4622,19 +4292,23 @@ static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
 
     Opt -> Run = Config -> Run;
     Opt -> Config = Config -> Environment;
+
+    /* Break the shallow pointer copy before allocating workflow-owned lists. */
+    for (D = 0; D < 3; ++D)
+        Opt -> Run.LatticeCountLists[D] = NULL;
+
     for (D = 0; D < 3; ++D) {
         size_t Bytes;
 
-        Opt -> Run.BodyCounts[D] = NULL;
-        Bytes = (size_t) Config -> Run.BodyCountLengths[D] * sizeof(int);
+        Bytes = (size_t) Config -> Run.LatticeCountListLengths[D] * sizeof(int);
         if (Bytes == 0)
             continue;
-        Opt -> Run.BodyCounts[D] = (int *) OptAllocZero(1, Bytes);
-        if (Opt -> Run.BodyCounts[D] == NULL) {
+        Opt -> Run.LatticeCountLists[D] = (int *) OptAllocZero(1, Bytes);
+        if (Opt -> Run.LatticeCountLists[D] == NULL) {
             FreeWorkflowState(Opt);
             return FALSE;
         }
-        memcpy(Opt -> Run.BodyCounts[D], Config -> Run.BodyCounts[D], Bytes);
+        memcpy(Opt -> Run.LatticeCountLists[D], Config -> Run.LatticeCountLists[D], Bytes);
     }
     return TRUE;
 }
@@ -4726,39 +4400,41 @@ static int InputHandler(const char *Key, const char *Value, void *Ctx)
         return OptParseInt(Value, &Run -> LatticeType);
     if (strcmp(Key, "skin_thickness") == 0)
         return OptParseReal(Value, &Run -> SkinThickness);
-    if (strcmp(Key, "body_stack_axis") == 0) {
-        if (OPT_STRICMP(Value, "u") == 0 || strcmp(Value, "0") == 0)
-            Run -> BodyStackAxis = 0;
-        else if (OPT_STRICMP(Value, "v") == 0 || strcmp(Value, "1") == 0)
-            Run -> BodyStackAxis = 1;
-        else if (OPT_STRICMP(Value, "w") == 0 || strcmp(Value, "2") == 0)
-            Run -> BodyStackAxis = 2;
-        else
-            return FALSE;
-        return TRUE;
-    }
     if (strcmp(Key, "lattice_count_u") == 0) {
-        if (!OptParseCounts(Value,
-                            &Run -> BodyCounts[0],
-                            &Run -> BodyCountLengths[0]))
+        if (!OptParseCountList(Value,
+                            &Run -> LatticeCountLists[0],
+                            &Run -> LatticeCountListLengths[0]))
             return FALSE;
-        Run -> LatticeCountU = Run -> BodyCounts[0][0];
+        Run -> LatticeCountU = Run -> LatticeCountLists[0][0];
         return TRUE;
     }
     if (strcmp(Key, "lattice_count_v") == 0) {
-        if (!OptParseCounts(Value,
-                            &Run -> BodyCounts[1],
-                            &Run -> BodyCountLengths[1]))
+        if (!OptParseCountList(Value,
+                            &Run -> LatticeCountLists[1],
+                            &Run -> LatticeCountListLengths[1]))
             return FALSE;
-        Run -> LatticeCountV = Run -> BodyCounts[1][0];
+        Run -> LatticeCountV = Run -> LatticeCountLists[1][0];
         return TRUE;
     }
     if (strcmp(Key, "lattice_count_w") == 0) {
-        if (!OptParseCounts(Value,
-                            &Run -> BodyCounts[2],
-                            &Run -> BodyCountLengths[2]))
+        if (!OptParseCountList(Value,
+                            &Run -> LatticeCountLists[2],
+                            &Run -> LatticeCountListLengths[2]))
             return FALSE;
-        Run -> LatticeCountW = Run -> BodyCounts[2][0];
+        Run -> LatticeCountW = Run -> LatticeCountLists[2][0];
+        return TRUE;
+    }
+    if (strcmp(Key, "body_stack_axis") == 0) {
+        if (OPT_STRICMP(Value, "u") == 0)
+            Run -> BodyStackAxis = 0;
+        else if (OPT_STRICMP(Value, "v") == 0)
+            Run -> BodyStackAxis = 1;
+        else if (OPT_STRICMP(Value, "w") == 0)
+            Run -> BodyStackAxis = 2;
+        else {
+            fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
+            return FALSE;
+        }
         return TRUE;
     }
     if (strcmp(Key, "initial_thickness") == 0)
@@ -4936,8 +4612,8 @@ static int ValidateInputs(const OptRunInputStruct *Run,
                 "skin_thickness is supported only for lattice_type 0.\n");
         return FALSE;
     }
-    if (Run -> BodyCountLengths[0] != Run -> BodyCountLengths[1] ||
-        Run -> BodyCountLengths[0] != Run -> BodyCountLengths[2]) {
+    if (Run -> LatticeCountListLengths[0] != Run -> LatticeCountListLengths[1] ||
+        Run -> LatticeCountListLengths[0] != Run -> LatticeCountListLengths[2]) {
         fprintf(stderr, "U, V and W count lists must have equal lengths.\n");
         return FALSE;
     }
@@ -4948,6 +4624,12 @@ static int ValidateInputs(const OptRunInputStruct *Run,
     }
     if (Cfg -> Scale <= 0.0 || !isfinite(Cfg -> Scale))
         return FALSE;
+    if (Cfg -> RemoveThinTiles) {
+        fprintf(stderr,
+                "remove_thin_tiles must be false: persistent FEM/subtile "
+                "topology requires the element set to remain unchanged.\n");
+        return FALSE;
+    }
     if (Run -> InitialThickness <= 0.0 || Run -> MeshSample <= 1 ||
         Run -> MaxIterations <= 0) {
         fprintf(stderr,

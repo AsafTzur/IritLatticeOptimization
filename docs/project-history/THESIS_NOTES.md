@@ -24,6 +24,13 @@ Potential thesis figure:
 
 ### Persistent-topology invariant
 
+Status update, 2026-10-27: the imported cleanup makes this model more explicit.
+`OptFEMModelStruct` owns nodes and elements; subtiles retain permanent element
+IDs; and neighbour groups are discovered once and reused. It rejects
+`remove_thin_tiles=true` because geometry removal would violate the fixed
+topology invariant. These implementation facts still require fresh runtime
+evidence on this machine.
+
 The optimization now treats node IDs, element IDs, C3D8 connectivity, exported
 patch order, and element-to-subtile ownership as persistent topology. Later INP
 files update node coordinates and are rejected if their topology differs. This
@@ -33,6 +40,17 @@ assumption was checked against one existing 229,376-element INP; a complete
 multi-iteration runtime experiment is still required.
 
 ## Multi-body method currently implemented
+
+Historical note: the following method was implemented through commit
+`4ceb75b`, but it is not present in the active 2026-10-27 imported cleanup,
+which executes only the first configured U/V/W count set.
+
+Status update, 2026-10-28: multi-body generation is active again with a
+simpler boundary-adapter design. The optimization owns one logical lattice;
+IRIT is called once per macro trivariate; body-local callback coordinates are
+translated into global lattice indices; and exported FEM order is mapped back
+to that same lattice. This is implemented and compile-checked, but a complete
+multi-body runtime experiment is still required.
 
 - Load multiple trivariate macro bodies from one ITD input.
 - Validate that each body has configured U/V/W lattice counts.

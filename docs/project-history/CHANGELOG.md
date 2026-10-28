@@ -3,6 +3,65 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-10-28 — Unified-lattice multi-body IRIT generation
+
+Purpose: support macro-shape files containing multiple trivariates without
+making the optimization lattice, design update, or neighbour model body-aware.
+
+Changes:
+
+- Load every macro-shape trivariate in ITD order and require one configured
+  U/V/W count value per trivariate.
+- Validate that counts differ on at most one stack axis; infer that axis when
+  possible and accept `body_stack_axis = u|v|w` for explicit or ambiguous
+  equal-count layouts.
+- Resolve the count lists into one unified logical U/V/W lattice. Existing
+  tile/subtile allocation, design updates, CSV data, and neighbour-group
+  construction continue to operate on that single lattice.
+- Call the IRIT tiler separately for each trivariate. The callback translates
+  body-local tile coordinates through a temporary grid origin and reads the
+  corresponding thickness from the unified list.
+- Combine all generated body objects before the single ITD/INP export.
+- Bind the exported FEM elements in per-body generation order back into their
+  canonical global tiles, preserving the persistent element-ID mapping.
+- Kept the manual four-element skin-boundary assignment that replaced the
+  ineffective `memcpy` during interactive validation.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` successfully with `/W4`, `__WINNT__`, and
+  the configured IRIT/NLopt include paths. Only existing nameless-union
+  warnings from `mvar_lib.h` were emitted.
+- `git diff --check` reported no whitespace errors.
+- Synthetic two-body U-, V-, and W-stack layouts produced complete unique
+  global-index coverage (84/84, 72/72, and 54/54 tiles respectively).
+- No complete multi-body geometry, solver, or optimization run was performed.
+
+## 2026-10-27 — Import persistent-topology cleanup from external ChatGPT work
+
+Purpose: replace the tracked implementation with the newer cleanup package
+prepared on another machine while retaining its source bundle and recording
+the behavioral tradeoffs in the base repository.
+
+Changes:
+
+- Replaced `test.c`, `opt_config.h`, and `opt_config.txt` with the versions from
+  `persistent_topology_cleanup/`.
+- Introduced explicit FEM and lattice model containers, permanent per-subtile
+  element-ID ownership, and persistent neighbour groups built once per run.
+- Changed INP processing so topology is parsed and bound after the first real
+  geometry export and is not reread on later iterations.
+- Rejected `remove_thin_tiles=true`, because removing geometry would invalidate
+  the fixed finite-element topology.
+- Retained the supplied cleanup package as import provenance.
+- Intentionally replaced the later multi-body stack-axis implementation: the
+  imported version parses multiple U/V/W values but executes only the first
+  count set. Cross-body neighbour matching is therefore no longer active.
+
+Verification:
+
+- Pending compilation and Git whitespace checks in this session.
+
 ## 2026-10-24 — Selectable U/V/W multi-body stack axis
 
 Purpose: allow the user to join continuous bodies along any one logical axis,

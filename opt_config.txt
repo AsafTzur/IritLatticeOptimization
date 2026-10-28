@@ -14,12 +14,16 @@ simulation_type = 2
 lattice_type = 1
 # Skin thickness for lattice type 0: 0 disables skin; maximum is 0.5.
 skin_thickness = 0
+# Supply one U/V/W value per macro body, in ITD order. For example:
+# lattice_count_u = 2, 3
+# lattice_count_v = 5, 5
+# lattice_count_w = 20, 10
+# Counts may vary only on the stack axis. If every body has identical counts,
+# body_stack_axis is required; otherwise the differing axis can be inferred.
 lattice_count_u = 2
 lattice_count_v = 5
 lattice_count_w = 20
-# For multiple bodies: u, v, or w. Bodies are ordered consecutively on this
-# axis; counts on the other two axes must be identical for every body.
-body_stack_axis = w
+# body_stack_axis = w
 
 initial_thickness = 0.188
 

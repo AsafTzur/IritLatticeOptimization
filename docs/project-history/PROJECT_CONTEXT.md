@@ -1,6 +1,6 @@
 # Project Context
 
-Last reviewed: 2026-10-24
+Last reviewed: 2026-10-27
 
 ## Purpose
 
@@ -74,6 +74,17 @@ Matching thickness values alone does not prove geometric or analysis
 continuity.
 
 ## Current multi-body limitation
+
+Status update, 2026-10-27: the active imported cleanup parses multiple U/V/W
+count values but executes only the first set. The selected-axis multi-body
+implementation described below remains available in Git history through commit
+`4ceb75b`, but it is not active in the current source.
+
+Status update, 2026-10-28: superseded. The active implementation resolves all
+body count sets into one logical lattice and calls IRIT separately for every
+macro trivariate. Optimization data remains body-independent. Counts must
+match on the two non-stack axes. This restores logical cross-interface
+neighbour matching but still does not establish geometric or FE continuity.
 
 Bodies are placed consecutively on one configured logical U, V, or W stack
 axis; counts on the other axes must match. Design-thickness matching crosses

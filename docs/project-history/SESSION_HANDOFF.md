@@ -1,12 +1,40 @@
 # Session Handoff
 
-Last updated: 2026-10-24
+Last updated: 2026-10-27
 
 ## Current objective
 
-Simplify the existing multi-body lattice-optimization implementation by reusing
-the established single-body iteration pipeline and its existing 3D tile data
-structure. Avoid bulky or redundant multi-body-specific code.
+Import the newer `persistent_topology_cleanup` package prepared on another
+machine, replace the base implementation coherently, verify it, and preserve
+the result in the base repository's Git history.
+
+## 2026-10-27 imported working state
+
+The package replaces `test.c`, `opt_config.h`, and `opt_config.txt` together.
+It introduces explicit FEM/lattice model containers, stable element IDs on
+subtiles, one-time INP topology binding, and persistent neighbour groups. It
+requires fixed topology and rejects `remove_thin_tiles=true`.
+
+This import intentionally removes the active selected-axis multi-body behavior
+from commit `4ceb75b`: multiple count values remain parseable, but execution
+uses only the first U/V/W set. The former implementation remains recoverable
+from Git history. The complete supplied folder is retained as provenance.
+
+## 2026-10-28 unified-lattice multi-body implementation
+
+The active source now loads all macro trivariates, validates one U/V/W count
+set per body, resolves one stack axis, and allocates the same single logical
+lattice used by the ordinary optimization pipeline. Only the geometry adapter
+loops over bodies. Its callbacks add a temporary per-call grid origin before
+looking up unified thickness data. Generated body objects are combined for one
+export, and persistent FEM ownership mirrors that per-body export order while
+storing results on canonical global tiles.
+
+`body_stack_axis = u|v|w` is optional when exactly one count list varies and is
+required when multiple bodies use identical count sets. Counts on the other
+two axes must match. Compilation succeeded with Visual C++ 2022 and only
+existing external-header warnings. No complete multi-body runtime run has yet
+been performed, and geometric/FE interface continuity remains unverified.
 
 ## User's proposed model
 
