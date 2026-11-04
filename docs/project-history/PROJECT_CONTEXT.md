@@ -17,8 +17,6 @@ thicknesses over repeated iterations.
 - `opt_config.h`: public configuration structures and `IritOptRun()` entry
   point declaration.
 - `opt_config.txt`: editable run, material, optimization, and path settings.
-- `SKIN_BOUNDARY_CHANGELOG.md`: detailed history of the skin-boundary repair.
-- `test_c_repairs_2026-10-23.html`: short email-ready repair summary.
 
 The `t1` directory contains older comparison copies. It is not a substitute
 for version control, and its files must not be assumed to be authoritative

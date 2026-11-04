@@ -13,9 +13,9 @@ Changes:
 - Added `No_Git/` to `.gitignore` for local comparison and archive material.
 - Removed old IRIT test bundles, historical source copies, the imported cleanup
   package, and the obsolete HTML repair summary from the tracked tree.
-- Retained `AGENTS.md`, `docs/project-history/`, and
-  `SKIN_BOUNDARY_CHANGELOG.md` because they provide the cross-chat instructions
-  and technical history required by the active project workflow.
+- Retained `AGENTS.md` and `docs/project-history/` because they provide the
+  cross-chat instructions and technical history required by the active
+  project workflow.
 
 Verification:
 
@@ -319,14 +319,35 @@ Verification evidence:
 Purpose: apply a configurable exterior skin without out-of-bounds boundary
 array access, unintended internal sheets, or the known approximate-FFD failure.
 
-Changes and evidence are recorded in `SKIN_BOUNDARY_CHANGELOG.md`.
+Problem observed:
 
-Important results:
+- An early attempt wrote `BPrm->Bndry[4]`, although the boundary array has
+  exactly four entries indexed 0 through 3. IRIT creates a face skin only when
+  all four corner thicknesses are positive.
+- Setting all four values to `0.05` while using approximate/global FFD mapping
+  produced many negative-Jacobian trivariates on the curved Winglet map and
+  stopped before processing the second body.
 
-- Boundary thickness uses exactly four corner values.
-- Skin is applied only to selected exterior V faces for lattice type 0.
-- Exact local deformation is used because approximate/global FFD produced
-  negative-Jacobian trivariates on the curved Winglet map.
-- Compilation was reported successful; the record says a freshly rebuilt
-  executable was still required for runtime verification.
+Repair recorded at the time:
+
+- `PreProcessTile1FaceParam` accepted
+  `const CagdRType SkinThickness[4]` and copied exactly four values into the
+  boundary structure.
+- Lattice type 0 used four-value uniform-skin and no-skin arrays.
+- Skin was assigned only to exterior V-min and V-max faces; interior V faces
+  and all U/W faces used zero thickness to avoid internal solid sheets.
+- Exact local deformation was selected because the approximate/global FFD
+  path inverted skin trivariates on the Winglet deformation map.
+
+Verification recorded at the time:
+
+- The old negative-Jacobian failure was reproduced.
+- Compilation of the repaired source was reported successful.
+- A freshly rebuilt executable was still required for runtime verification;
+  no completed runtime validation was recorded.
+
+Later evolution: the skin thickness and FFD choice subsequently became
+configuration-driven, and the implementation changed from the originally
+recorded `memcpy` form. The durable invariant remains that there must be no
+`Bndry[4]` access and every face boundary uses exactly four corner values.
 

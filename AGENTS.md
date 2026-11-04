@@ -9,8 +9,7 @@ Before modifying code, read:
 3. `docs/project-history/DECISIONS.md`
 4. `docs/project-history/THESIS_NOTES.md`
 
-Also read any topic-specific record linked from those files, such as
-`SKIN_BOUNDARY_CHANGELOG.md`.
+Also read any topic-specific record linked from those files.
 
 ## Cross-chat continuity
 
