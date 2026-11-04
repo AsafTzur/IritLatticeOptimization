@@ -2,6 +2,15 @@
 
 Last updated: 2026-11-04
 
+## 2026-11-04 GitHub remote established
+
+The existing local repository is connected to
+`https://github.com/AsafTzur/IritLatticeOptimization.git` as `origin`.
+Local `main` tracks `origin/main`. The selective ANSYS import commit
+`3dffef6` was pushed and verified through `git ls-remote`. Uncommitted local
+deletions, configuration/history edits, comparison directories, and
+`test1.c` were not included in that push.
+
 ## 2026-11-04 selective `test1.c` import
 
 The ANSYS winglet INP functionality from `test1.c` was selectively ported
