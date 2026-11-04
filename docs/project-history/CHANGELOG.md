@@ -3,6 +3,27 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-04 — Reduce the tracked repository to active project files
+
+Purpose: keep the synchronized GitHub working tree focused on the active
+optimization source, configuration, and durable project memory.
+
+Changes:
+
+- Added `No_Git/` to `.gitignore` for local comparison and archive material.
+- Removed old IRIT test bundles, historical source copies, the imported cleanup
+  package, and the obsolete HTML repair summary from the tracked tree.
+- Retained `AGENTS.md`, `docs/project-history/`, and
+  `SKIN_BOUNDARY_CHANGELOG.md` because they provide the cross-chat instructions
+  and technical history required by the active project workflow.
+
+Verification:
+
+- The removal commit was scoped explicitly; active source/configuration files
+  and unrelated uncommitted edits were not staged.
+- Removed files remain recoverable from Git history and local copies under
+  `No_Git/` where available.
+
 ## 2026-11-04 — Import ANSYS winglet INP support-face conversion
 
 Purpose: retain the newer ANSYS-compatible INP generation from `test1.c`

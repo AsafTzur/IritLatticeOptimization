@@ -36,6 +36,8 @@ x86/
 *.swp
 *~
 
-# Keep research inputs, configurations, documentation, source references,
-# and deliberate historical copies tracked unless explicitly excluded later.
+# Local archive and comparison files that should not be uploaded.
+No_Git/
+
+# Keep active research sources, configuration, and project memory tracked.
 

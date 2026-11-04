@@ -2,6 +2,14 @@
 
 Last updated: 2026-11-04
 
+## 2026-11-04 repository scope cleanup
+
+The GitHub working tree is being reduced to the active source, configuration,
+and durable project records. Local historical/comparison material belongs in
+`No_Git/`, which is ignored. `AGENTS.md`, `docs/project-history/`, and
+`SKIN_BOUNDARY_CHANGELOG.md` remain tracked intentionally because they provide
+the instructions and persistent context future Codex sessions must read.
+
 ## 2026-11-04 GitHub remote established
 
 The existing local repository is connected to
