@@ -1,6 +1,45 @@
 # Session Handoff
 
-Last updated: 2026-10-28
+Last updated: 2026-11-04
+
+## 2026-11-04 selective `test1.c` import
+
+The ANSYS winglet INP functionality from `test1.c` was selectively ported
+into `test.c`. The support boundary can target V-min or V-max on a configured
+macro body. Exported C3D8 `SUPPORT` faces are converted through persistent FEM
+connectivity into `SUPPORT_NODES`, which is used by the ANSYS `*BOUNDARY`
+card; the `PRESSURE` surface remains available to `*DSLOAD`.
+
+The cancelled passive-skin optimization attempt in `test1.c` was deliberately
+not imported. `test.c` still uses strict one-to-one FEM ownership and contains
+no `ReadGeneratedTileElementRanges` helper or `SET_n`-based skin classification.
+Compilation was not run because `cl.exe` was unavailable on the command-runner
+PATH. A full generated-INP/ANSYS import test is still required.
+
+## 2026-11-02 skin-optimization rollback
+
+The user's objective is to keep the exterior skin in geometry and structural
+simulation while excluding its elements, SED, stress, and volume from lattice
+design updates. The first attempted implementation was judged unsuitable and
+has been removed before redesign.
+
+The removed code parsed IRIT-generated `SET_n` element ranges and assumed that
+each range contained a fixed lattice/core prefix followed by passive skin
+elements. `test.c` now uses the prior strict binder again: all FEM elements
+must map one-to-one to lattice subtiles. Consequently, a skinned model that
+adds elements is expected to fail with a mesh/order mismatch. This is an
+intentional safe baseline, not the final skin-separation solution.
+
+Skin generation, refinement, INP export, material assignment, and participation
+in ANSYS/CalculiX were not removed. The next repair should establish explicit,
+validated skin-versus-lattice FEM ownership rather than infer identity from
+element order.
+
+Verification in this session: source search found no remaining fragments of
+the removed mapping. `git diff --check` reported two pre-existing trailing
+spaces elsewhere in the broader uncommitted `test.c`; the rollback added none.
+No compilation was run because `cl.exe` was unavailable on the command-runner
+PATH.
 
 ## Current objective
 

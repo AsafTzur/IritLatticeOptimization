@@ -3,6 +3,68 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-04 — Import ANSYS winglet INP support-face conversion
+
+Purpose: retain the newer ANSYS-compatible INP generation from `test1.c`
+without restoring its cancelled passive-skin optimization mapping.
+
+Changes:
+
+- Added compile-time selection of the supported macro body and its parametric
+  V-min or V-max boundary.
+- Exported `SUPPORT` as an element-face surface and converted its C3D8 faces
+  through the persistent FEM connectivity into a unique `SUPPORT_NODES` set.
+- Applied the ANSYS `*BOUNDARY` card to `SUPPORT_NODES` while preserving the
+  `PRESSURE` element surface used by `*DSLOAD`.
+- Kept the strict `test.c` element-to-subtile binder. The unverified
+  `SET_n`-range inference and passive-skin branch from `test1.c` were not
+  imported.
+
+Verification:
+
+- Source search confirmed that `SUPPORT_NODES` and the selectable support-side
+  path are present in `test.c`.
+- Source search confirmed that `ReadGeneratedTileElementRanges`, the
+  `Skin-aware topology mapping` diagnostics, and the passive-skin branch remain
+  absent from `test.c`.
+- `git diff --check -- test.c` reported no whitespace errors after cleanup.
+- Compilation was not run because `cl.exe` was not available on the active
+  command-runner PATH.
+
+## 2026-11-02 — Remove unsuccessful skin-element exclusion attempt
+
+Purpose: return the optimizer's FEM ownership mapping to a clean baseline
+before redesigning how passive skin elements are distinguished from lattice
+elements.
+
+Changes:
+
+- Removed the skin-aware `SET_n` range parser from `test.c`.
+- Removed the branch that assumed each generated tile set stored all lattice
+  elements first and all skin elements afterward.
+- Restored strict one-to-one FEM binding: the element count must equal
+  `tile count * subtile count * mesh sample` before elements are assigned to
+  lattice design variables.
+- Preserved skin geometry generation, INP export, material assignment, and
+  solver participation. No replacement skin-exclusion method was introduced.
+
+Behavioral consequence:
+
+- A skinned model with additional FEM elements now stops with the existing
+  mesh/order mismatch instead of silently classifying elements by an
+  unverified export-order assumption.
+
+Verification:
+
+- Confirmed by source search that the `ReadGeneratedTileElementRanges` helper,
+  skin-aware mapping messages, passive-skin branch, and its cleanup label are
+  absent from `test.c`.
+- `git diff --check` reached the working tree and reported only two existing
+  trailing-whitespace lines in unrelated portions of the broader uncommitted
+  `test.c` changes; this rollback introduced no reported whitespace error.
+- Compilation was not run because `cl.exe` was not available on the active
+  command-runner PATH.
+
 ## 2026-10-28 — Configurable microstructure FFD mode
 
 Purpose: allow the run configuration to select the existing approximate/global
