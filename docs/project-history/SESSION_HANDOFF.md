@@ -1,6 +1,15 @@
 # Session Handoff
 
-Last updated: 2026-11-04
+Last updated: 2026-11-07
+
+## 2026-11-07 skinned-tile degree-unification repair
+
+`test.c` now implements its local uniform-degree adapter through the public
+`IritTrivTVsUniformCommonDegree` API instead of calling IRIT-private `static`
+helpers that caused unresolved external symbols. The caller replaces and frees
+the original tile on success. The block is currently disabled by the user's
+`if (FALSE)` toggle. Source inspection passed; a full build was blocked by an
+MSBuild `FileTracker` access-denied error.
 
 ## 2026-11-04 repository scope cleanup
 

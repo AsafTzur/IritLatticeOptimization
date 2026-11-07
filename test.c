@@ -358,6 +358,7 @@ static IritPrsrObjectStruct *PreProcessTile(
 static IritPrsrObjectStruct *PreProcessTileFFD(
                                   IritPrsrObjectStruct *Tile,
                                   IritTrivFFDInfoStruct *FFDInfo);
+static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Tile);
 static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode);
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile, int RefinementLevel);
 
@@ -3668,6 +3669,20 @@ static IritPrsrObjectStruct *PreProcessTile(
                         "Failed to refine skinned tile.\n");
                     return NULL;
                 }
+                if (FALSE)
+                {
+                    IritPrsrObjectStruct *UniformTile =
+                        IritTVUniformDegree(Tile);
+
+                    if (UniformTile == NULL) {
+                        fprintf(stderr,
+                            "Failed to unify skinned tile.\n");
+                        return NULL;
+                    }
+
+                    IritPrsrFreeObject(Tile);
+                    Tile = UniformTile;
+                }
             }
 
             IritGeomBBComputeBboxObject(Tile, &BBox, FALSE);
@@ -4054,6 +4069,32 @@ static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile,
     }
 
     return TRUE;
+}
+
+static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Tile)
+{
+    const IritTrivTVStruct *OldTV;
+    IritTrivTVStruct *NewTV,
+        *RaisedTVs;
+    IritPrsrObjectStruct *RaisedDegTile;
+
+    if (Tile == NULL || !IRIT_PRSR_IS_TRIVAR_OBJ(Tile))
+        return NULL;
+
+    RaisedTVs = IritTrivTVsUniformCommonDegree(Tile->U.Trivars, -1);
+    if (RaisedTVs == NULL)
+        return NULL;
+
+    for (OldTV = Tile->U.Trivars, NewTV = RaisedTVs;
+         OldTV != NULL && NewTV != NULL;
+         OldTV = OldTV->Pnext, NewTV = NewTV->Pnext) {
+        IRIT_MISC_ATTR_SAFECOPY_ATTRS(NewTV->Attr, OldTV->Attr);
+    }
+
+    RaisedDegTile = IritPrsrGenTRIVARObject(RaisedTVs);
+    IRIT_MISC_ATTR_SAFECOPY_ATTRS(RaisedDegTile->Attr, Tile->Attr);
+
+    return RaisedDegTile;
 }
 
 /***************************************************************************

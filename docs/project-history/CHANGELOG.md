@@ -3,6 +3,27 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-07 — Repair skinned-tile degree unification
+
+Purpose: remove linker failures caused by calls from `test.c` to private
+`static` helpers in IRIT's executable layer.
+
+Changes:
+
+- Reimplemented the local uniform-degree adapter with the public
+  `IritTrivTVsUniformCommonDegree` API.
+- Preserved tile and trivariate attributes on the newly allocated geometry.
+- Replaced and freed the original tile after successful degree unification.
+- Kept the call site behind the user's `if (FALSE)` development toggle, so the
+  behavior remains disabled until explicitly enabled.
+
+Verification:
+
+- Source search confirmed that `test.c` no longer references
+  `IritMicroTileGetMaxOrder` or `IritMicroTileRaiseUniformDegree`.
+- A full Visual Studio build was attempted but could not complete because
+  MSBuild's `FileTracker` received an access-denied error in the environment.
+
 ## 2026-11-04 — Reduce the tracked repository to active project files
 
 Purpose: keep the synchronized GitHub working tree focused on the active
