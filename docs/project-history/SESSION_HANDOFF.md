@@ -2,6 +2,23 @@
 
 Last updated: 2026-11-07
 
+## 2026-11-07 memory-helper cleanup
+
+Configuration lattice-count arrays now use one shared cleanup helper for both
+caller and workflow-owned configurations. Scalar-field capacity growth is now
+atomic across its values and validity arrays. Release x64 `ClCompile` compiled
+`test.c` successfully after the repair.
+
+## 2026-11-07 unified configuration structure
+
+All externally supplied settings now live directly in one flat
+`OptConfigStruct`. `UseTargetVolume` and `GeometryOnly` are fields of that
+structure, and `IritOptRun()` now takes only `const OptConfigStruct *`. The
+workflow owns one deep copy, including copied lattice-count arrays. The Release
+x64 Visual C++ `ClCompile` target compiled `test.c` successfully. The future
+IRIT-language wrapper still needs to translate script objects into this C
+structure; that wrapper is not part of this change.
+
 ## 2026-11-07 skinned-tile degree-unification repair
 
 `test.c` now implements its local uniform-degree adapter through the public

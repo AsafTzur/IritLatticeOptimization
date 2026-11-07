@@ -224,8 +224,7 @@ typedef struct OptMMADataStruct {
 ***************************************************************************/
 
 struct OptWorkflowStateStruct {
-    OptRunInputStruct Run;
-    OptConfigInputStruct Config;
+    OptConfigStruct Config;
 
     int L;
     int LMin;
@@ -272,7 +271,7 @@ struct OptWorkflowStateStruct {
 
 /* Workflow. */
 static int OptimizationMain(int Argc, char **Argv);
-int IritOptRun(const OptConfigStruct *Config, CagdBType GeometryOnly);
+int IritOptRun(const OptConfigStruct *Config);
 static int RunWorkflow(OptWorkflowStateStruct *Opt);
 static int InitLegacyDataFile(OptWorkflowStateStruct *Opt);
 static int RunIRITIntegrated(OptWorkflowStateStruct *Opt, int Mode);
@@ -402,10 +401,8 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
                                    CagdRType *Value);
 
 /* Unified input parsing. */
-static void OptSetDefaultRunInputs(OptRunInputStruct *Run);
-static void OptSetDefaultConfigInputs(OptConfigInputStruct *Cfg);
 static void OptSetDefaultConfig(OptConfigStruct *Config);
-static void OptFreeConfig(OptConfigStruct *Config);
+static void OptFreeConfigArrays(OptConfigStruct *Config);
 static int OptResolveDefaultPaths(OptConfigStruct *Config);
 static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
                                    OptWorkflowStateStruct *Opt);
@@ -415,8 +412,7 @@ static int ParseKeyValueFile(const char *FileName,
                              void *Ctx);
 static int InputHandler(const char *Key, const char *Value, void *Ctx);
 static CagdBType OptParseBool(const char *Value);
-static int ValidateInputs(const OptRunInputStruct *Run,
-                          const OptConfigInputStruct *Cfg);
+static int ValidateInputs(const OptConfigStruct *Config);
 
 /* File and process helpers. */
 static int EnsureDirectoryRecursive(const char *DirName);
@@ -460,18 +456,6 @@ static void *OptReallocCopy(void *OldData,
 /* Allows fatal errors raised deep in the workflow to record their reason. */
 IRIT_STATIC_DATA OptWorkflowStateStruct *GlblActiveWorkflow = NULL;
 
-/*
- * Controls only the initial geometry-only volume-fraction fitting loop.
- * TRUE preserves the historical LatticeByVolumeFraction() behaviour.
- * FALSE starts the optimization directly from initial_thickness.
- *
- * This intentionally does NOT disable TargetVolumeFraction itself: MMA may
- * still use that target later as its volume constraint.  The flag is kept
- * here instead of OptRunInputStruct so this source remains compatible with
- * the existing external opt_config.h.
- */
-IRIT_STATIC_DATA CagdBType GlblUseTargetVolume = TRUE;
-
 /***************************************************************************
 *                           Program and Workflow                            *
 ***************************************************************************/
@@ -509,7 +493,6 @@ int main(int Argc, char **Argv)
 ***************************************************************************/
 static int OptimizationMain(int Argc, char **Argv)
 {
-    CagdBType GeometryOnly = FALSE;
     const char *ConfigFile = "opt_config.txt";
     OptConfigStruct Config;
     int i;
@@ -518,7 +501,7 @@ static int OptimizationMain(int Argc, char **Argv)
 
     for (i = 1; i < Argc; ++i) {
         if (strcmp(Argv[i], "--geometry-only") == 0)
-            GeometryOnly = TRUE;
+            Config.GeometryOnly = TRUE;
         else
             ConfigFile = Argv[i];
     }
@@ -526,11 +509,11 @@ static int OptimizationMain(int Argc, char **Argv)
     if (!LoadInputs(ConfigFile, &Config))
         OptFatalF("Failed to parse configuration file: %s", ConfigFile);
 
-    if (!ValidateInputs(&Config.Run, &Config.Environment))
+    if (!ValidateInputs(&Config))
         OptFatal("Input validation failed");
 
-    i = IritOptRun(&Config, GeometryOnly);
-    OptFreeConfig(&Config);
+    i = IritOptRun(&Config);
+    OptFreeConfigArrays(&Config);
     return i ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -540,23 +523,23 @@ static int OptimizationMain(int Argc, char **Argv)
 *   This is the entry point for the IRIT user-library binding.             *
 ***************************************************************************/
 
-int IritOptRun(const OptConfigStruct *Config, CagdBType GeometryOnly)
+int IritOptRun(const OptConfigStruct *Config)
 {
     OptWorkflowStateStruct OptData;
     OptWorkflowStateStruct *Opt = &OptData;
     int Ok;
 
     if (Config == NULL ||
-        !ValidateInputs(&Config -> Run, &Config -> Environment))
+        !ValidateInputs(Config))
         return FALSE;
     IRIT_ZAP_MEM(Opt, sizeof(*Opt));
     if (!OptCopyConfigToWorkflow(Config, Opt))
         return FALSE;
 
-    if (!GeometryOnly)
+    if (!Config -> GeometryOnly)
         GlblActiveWorkflow = Opt;
     InitializeWorkflowState(Opt);
-    if (GeometryOnly)
+    if (Config -> GeometryOnly)
         Ok = InitLegacyDataFile(Opt) && RunIRITIntegrated(Opt, 0);
     else {
         Ok = RunWorkflow(Opt);
@@ -592,7 +575,7 @@ static int RunWorkflow(OptWorkflowStateStruct *Opt)
         OptFatalF("Failed to initialize legacy data file: %s",
                   Opt -> Config.DataNewFile);
 
-    if (GlblUseTargetVolume) {
+    if (Opt -> Config.UseTargetVolume) {
         if (!LatticeByVolumeFraction(Opt)) {
             OptWriteFinishReason(Opt, "Initial volume-fraction setup failed", 0);
             return FALSE;
@@ -602,10 +585,10 @@ static int RunWorkflow(OptWorkflowStateStruct *Opt)
         fprintf(stderr,
                 "Initial target-volume fitting disabled; "
                 "starting directly from initial_thickness = %.8g.\n",
-                (double) Opt -> Run.InitialThickness);
+                (double) Opt -> Config.InitialThickness);
     }
 
-    for (Iter = 1; Iter <= Opt -> Run.MaxIterations; ++Iter) {
+    for (Iter = 1; Iter <= Opt -> Config.MaxIterations; ++Iter) {
         Opt -> CurrentIteration = Iter;
         OptFormatNowHMS(Opt -> TimeIritStart);
         if (!RunIRITIntegrated(Opt, 0))
@@ -638,7 +621,7 @@ static int RunWorkflow(OptWorkflowStateStruct *Opt)
     }
 
     OptWriteFinishReason(Opt, "Maximum iteration count reached",
-                         Opt -> Run.MaxIterations);
+                         Opt -> Config.MaxIterations);
     return TRUE;
 }
 
@@ -668,7 +651,7 @@ static int InitLegacyDataFile(OptWorkflowStateStruct *Opt)
 
     Times = Opt -> Lattice.TileCount * Opt -> LMin;
     for (I = 0; I < Times; ++I)
-        fprintf(F, "%d,%.17g,0\n", I + 1, Opt -> Run.InitialThickness);
+        fprintf(F, "%d,%.17g,0\n", I + 1, Opt -> Config.InitialThickness);
 
     fclose(F);
     return 1;
@@ -759,7 +742,7 @@ static int RunIRITIntegrated(OptWorkflowStateStruct *Opt, int Mode)
 ***************************************************************************/
 static int RunSimulation(OptWorkflowStateStruct *Opt)
 {
-    switch (Opt -> Run.SimulationType) {
+    switch (Opt -> Config.SimulationType) {
         case 1:
             /* Winglet analysis definition.  To return to the cantilever test,
              * replace the call below with AddAnsysAnalysisDefinition(Opt). */
@@ -774,7 +757,7 @@ static int RunSimulation(OptWorkflowStateStruct *Opt)
         default:
             fprintf(stderr,
                     "Unsupported simulation_type: %d\n",
-                    Opt -> Run.SimulationType);
+                    Opt -> Config.SimulationType);
             return FALSE;
     }
 }
@@ -1911,7 +1894,7 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
     /* Refresh analysis fields without changing the thickness design. */
     UpdateTileAnalysisData(Opt);
 
-    switch (Opt -> Run.OptimizationAlgorithm) {
+    switch (Opt -> Config.OptimizationAlgorithm) {
         case 0:
             Opt -> LastThicknessChange =
                 DesignUpdateSEDRatio(Opt,
@@ -1942,7 +1925,7 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
         default:
             fprintf(stderr,
                     "Unknown optimization_algorithm = %d\n",
-                    Opt -> Run.OptimizationAlgorithm);
+                    Opt -> Config.OptimizationAlgorithm);
             IritFree(PrevThickness);
             return -1;
     }
@@ -1987,14 +1970,14 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
             "(tol %.8g)\n",
             Iter,
             Opt -> LastThicknessChange,
-            Opt -> Run.ThicknessChangeTolerance);
+            Opt -> Config.ThicknessChangeTolerance);
 
-    if (Opt -> LastThicknessChange <= Opt -> Run.ThicknessChangeTolerance) {
+    if (Opt -> LastThicknessChange <= Opt -> Config.ThicknessChangeTolerance) {
         ++Opt -> ConsecutiveSmallChanges;
         fprintf(stderr,
                 "Small-change convergence count: %d/%d\n",
                 Opt -> ConsecutiveSmallChanges,
-                Opt -> Run.ConvergenceIterations);
+                Opt -> Config.ConvergenceIterations);
     }
     else {
         Opt -> ConsecutiveSmallChanges = 0;
@@ -2003,12 +1986,12 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
     IritFree(PrevThickness);
 
     if (Opt -> ConsecutiveSmallChanges >=
-        Opt -> Run.ConvergenceIterations) {
+        Opt -> Config.ConvergenceIterations) {
         fprintf(stderr,
                 "Optimization converged: max thickness change <= %.8g "
                 "for %d consecutive iterations.\n",
-                Opt -> Run.ThicknessChangeTolerance,
-                Opt -> Run.ConvergenceIterations);
+                Opt -> Config.ThicknessChangeTolerance,
+                Opt -> Config.ConvergenceIterations);
         return TRUE;
     }
 
@@ -2450,7 +2433,7 @@ static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
         for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
             OptSubTileStruct *SubTile = &Tile -> SubTiles[L];
             CagdRType TOld = Iter <= 1 || Prev[Counter] <= TMin ?
-                             Opt -> Run.InitialThickness : Prev[Counter];
+                             Opt -> Config.InitialThickness : Prev[Counter];
             CagdRType TLow = TOld * (1.0 - MoveFrac);
             CagdRType THigh = TOld * (1.0 + MoveFrac);
             CagdRType TSafe = TOld > Eps ? TOld : Eps;
@@ -2493,7 +2476,7 @@ static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
     MMAData.ObjGrad = ObjGrad;
     MMAData.VolGrad = VolGrad;
     MMAData.ObjAtPrev = CurrentCompliance;
-    MMAData.TargetVolume = Opt -> Run.TargetVolumeFraction * Opt -> DefMapVol;
+    MMAData.TargetVolume = Opt -> Config.TargetVolumeFraction * Opt -> DefMapVol;
 
     if (MMAData.TargetVolume <= Eps)
         MMAData.TargetVolume = CurrentVolume;
@@ -2686,7 +2669,7 @@ static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
     if (SedTarget <= Eps)
         SedTarget = Eps;
 
-    TargetSum = Count * Opt -> Run.InitialThickness;
+    TargetSum = Count * Opt -> Config.InitialThickness;
     if (TargetSum <= Eps) {
         for (I = 0; I < Count; ++I)
             TargetSum += Prev[I];
@@ -2833,11 +2816,11 @@ static CagdRType DesignUpdateAsaf(OptWorkflowStateStruct *Opt,
     if (TargetSed <= 0.0)
         OptFatal("Invalid target SED value in DesignUpdateAsaf");
 
-    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
-        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
-            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
-                int TileIndex = U + Opt -> Run.LatticeCountU *
-                    (V + Opt -> Run.LatticeCountV * W);
+    for (W = 0; W < Opt -> Config.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Config.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Config.LatticeCountU; ++U) {
+                int TileIndex = U + Opt -> Config.LatticeCountU *
+                    (V + Opt -> Config.LatticeCountV * W);
                 OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
 
                 for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
@@ -2968,7 +2951,7 @@ static int BuildNeighbourGroups(OptWorkflowStateStruct *Opt)
     if (Opt -> Lattice.NeighboursBuilt)
         return TRUE;
 
-    switch (Opt -> Run.LatticeType) {
+    switch (Opt -> Config.LatticeType) {
         case 0: Ok = BuildNeighbourGroupsB(Opt, Local0, 6, 0); break;
         case 1: Ok = BuildNeighbourGroupsB(Opt, Local01, 6, 0); break;
         case 2: Ok = BuildNeighbourGroupsB(Opt, Local2, 8, 8); break;
@@ -3025,11 +3008,11 @@ static int BuildNeighbourGroupsB(OptWorkflowStateStruct *Opt,
     if (Entries == NULL)
         return FALSE;
 
-    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
-        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
-            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
-                int Tile = U + Opt -> Run.LatticeCountU *
-                    (V + Opt -> Run.LatticeCountV * W);
+    for (W = 0; W < Opt -> Config.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Config.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Config.LatticeCountU; ++U) {
+                int Tile = U + Opt -> Config.LatticeCountU *
+                    (V + Opt -> Config.LatticeCountV * W);
 
                 for (L = 0; L < LocalCount; ++L) {
                     Entries[X].LinearId = Tile * LocalCount + L;
@@ -3188,8 +3171,8 @@ static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt)
             CagdRType UpperLimit;
 
             VolFraction = Opt -> LatticeVol / Opt -> DefMapVol;
-            Target = Opt -> Run.TargetVolumeFraction;
-            Tol = Opt -> Run.TargetVolumeFractionTol;
+            Target = Opt -> Config.TargetVolumeFraction;
+            Tol = Opt -> Config.TargetVolumeFractionTol;
 
             LowerLimit = Target * (1.0 - Tol);
             UpperLimit = Target * (1.0 + Tol);
@@ -3201,9 +3184,9 @@ static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt)
                     "thickness.\n",
                     Iter + 1, VolFraction, LowerLimit, UpperLimit);
 
-                Opt -> Run.InitialThickness *= 0.9;
+                Opt -> Config.InitialThickness *= 0.9;
                 fprintf(stdout, "New initial thickness: %.8g\n",
-                    Opt -> Run.InitialThickness);
+                    Opt -> Config.InitialThickness);
 
                 fflush(stdout);
 
@@ -3217,9 +3200,9 @@ static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt)
                     "thickness.\n",
                     Iter + 1, VolFraction, LowerLimit, UpperLimit);
 
-                Opt -> Run.InitialThickness *= 1.1;
+                Opt -> Config.InitialThickness *= 1.1;
                 fprintf(stdout, "New initial thickness: %.8g\n",
-                    Opt -> Run.InitialThickness);
+                    Opt -> Config.InitialThickness);
 
                 fflush(stdout);
 
@@ -3308,11 +3291,11 @@ static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt)
 
     OptWriteCsvHeader(F, Opt);
 
-    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
-        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
-            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
-                int TileIndex = U + Opt -> Run.LatticeCountU *
-                    (V + Opt -> Run.LatticeCountV * W);
+    for (W = 0; W < Opt -> Config.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Config.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Config.LatticeCountU; ++U) {
+                int TileIndex = U + Opt -> Config.LatticeCountU *
+                    (V + Opt -> Config.LatticeCountV * W);
 
                 for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L) {
                     fprintf(F,
@@ -3403,8 +3386,8 @@ static float **ReadLegacyCsvToFloatArray(OptWorkflowStateStruct *Opt,
         Data[I][1] = (float) Values[I];
     }
     IritFree(Values);
-    Opt -> Legacy.LType = Opt -> Run.LatticeType;
-    Opt -> Legacy.MeshSample = Opt -> Run.MeshSample;
+    Opt -> Legacy.LType = Opt -> Config.LatticeType;
+    Opt -> Legacy.MeshSample = Opt -> Config.MeshSample;
     *OutRows = N;
     *OutCols = 3;
     return Data;
@@ -3556,9 +3539,9 @@ static IritPrsrObjectStruct *PreProcessTile(
 
     Index = LclData -> GridOrigin[0] + CBData -> TileIdxs[0] +
         (LclData -> GridOrigin[1] + CBData -> TileIdxs[1]) *
-            Opt -> Run.LatticeCountU +
+            Opt -> Config.LatticeCountU +
         (LclData -> GridOrigin[2] + CBData -> TileIdxs[2]) *
-            Opt -> Run.LatticeCountU * Opt -> Run.LatticeCountV;
+            Opt -> Config.LatticeCountU * Opt -> Config.LatticeCountV;
 
     fprintf(stderr,
             "Index:[%d], Tile[%d,%d,%d] from "
@@ -3623,7 +3606,7 @@ static IritPrsrObjectStruct *PreProcessTile(
             int SkinIndex;
 
             for (SkinIndex = 0; SkinIndex < 4; ++SkinIndex)
-                UniformSkin[SkinIndex] = Opt -> Run.SkinThickness;
+                UniformSkin[SkinIndex] = Opt -> Config.SkinThickness;
 
             if (!PreProcessTile1FaceParam(
                                       &WMaxPrms,
@@ -3661,7 +3644,7 @@ static IritPrsrObjectStruct *PreProcessTile(
                                             FALSE,
                                             NULL);
 
-            if (Opt->Run.SkinThickness > 0.0) {
+            if (Opt->Config.SkinThickness > 0.0) {
                 if (!RefineTileTrivariatesUniformly(
                     Tile,
                     OPT_SKIN_REFINE_LEVEL)) {
@@ -3669,7 +3652,7 @@ static IritPrsrObjectStruct *PreProcessTile(
                         "Failed to refine skinned tile.\n");
                     return NULL;
                 }
-                if (FALSE)
+                if (TRUE)
                 {
                     IritPrsrObjectStruct *UniformTile =
                         IritTVUniformDegree(Tile);
@@ -3861,7 +3844,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     const int UseFFDTileAggregation = 0;
     /* Exact local deformation is required for full boundary skins on highly
      * curved maps; the approximate/global FFD path can invert skin TVs. */
-    const CagdBType UseMicroStructFFD = Opt -> Run.UseMicroStructFFD;
+    const CagdBType UseMicroStructFFD = Opt -> Config.UseMicroStructFFD;
     int B, D, Handler;
     int Ok = FALSE;
     CagdRType Steps[3][2];
@@ -3904,16 +3887,16 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         if (BodyMap == NULL)
             goto Cleanup;
         for (D = 0; D < 3; ++D)
-            Counts[D] = Opt -> Run.LatticeCountLists[D][B];
+            Counts[D] = Opt -> Config.LatticeCountLists[D][B];
         for (I = 0; I < B; ++I)
             GridOrigin[Opt -> StackAxis] +=
-                Opt -> Run.LatticeCountLists[Opt -> StackAxis][I];
+                Opt -> Config.LatticeCountLists[Opt -> StackAxis][I];
 
         IRIT_ZAP_MEM(&LclData, sizeof(LclData));
         LclData.Opt = Opt;
         LclData.BodyIndex = B;
         LclData.DefMap = BodyMap;
-        LclData.BndryThickness = Opt -> Run.SkinThickness;
+        LclData.BndryThickness = Opt -> Config.SkinThickness;
         for (D = 0; D < 3; ++D) {
             LclData.Counts[D] = Counts[D];
             LclData.GridOrigin[D] = GridOrigin[D];
@@ -3984,7 +3967,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
 
         IRIT_ZAP_MEM(&Save, sizeof(Save));
         for (D = 0; D < 3; ++D)
-            Save.UVWSamples[D] = Opt -> Run.MeshSample;
+            Save.UVWSamples[D] = Opt -> Config.MeshSample;
 
         Save.Epsilon = IRIT_EPS;
         Save.BzrOnly = FALSE;
@@ -4171,7 +4154,7 @@ Error:
 ***************************************************************************/
 static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
 {
-    const char *FileName = Opt -> Run.MacroShapePath;
+    const char *FileName = Opt -> Config.MacroShapePath;
     IritPrsrObjectStruct *Objects;
     IritPrsrObjectStruct *Obj;
     IritTrivTVStruct **Tail = &Opt -> DefMap;
@@ -4216,23 +4199,23 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
     Opt -> DefMapCount = FoundCount;
 
     for (D = 0; D < 3; ++D) {
-        if (Opt -> Run.LatticeCountListLengths[D] != FoundCount) {
+        if (Opt -> Config.LatticeCountListLengths[D] != FoundCount) {
             fprintf(stderr,
                     "%c count list has %d values, but macro shape has "
                     "%d bodies.\n",
-                    "UVW"[D], Opt -> Run.LatticeCountListLengths[D],
+                    "UVW"[D], Opt -> Config.LatticeCountListLengths[D],
                     FoundCount);
             return FALSE;
         }
     }
 
-    Axis = Opt -> Run.BodyStackAxis;
+    Axis = Opt -> Config.BodyStackAxis;
     for (D = 0; D < 3; ++D) {
         CagdBType Differs = FALSE;
 
         for (B = 1; B < FoundCount; ++B) {
-            if (Opt -> Run.LatticeCountLists[D][B] !=
-                Opt -> Run.LatticeCountLists[D][0]) {
+            if (Opt -> Config.LatticeCountLists[D][B] !=
+                Opt -> Config.LatticeCountLists[D][0]) {
                 Differs = TRUE;
                 break;
             }
@@ -4269,12 +4252,12 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
 
         if (D == Axis) {
             for (B = 0; B < FoundCount; ++B)
-                Count += Opt -> Run.LatticeCountLists[D][B];
+                Count += Opt -> Config.LatticeCountLists[D][B];
         }
         else {
-            Count = Opt -> Run.LatticeCountLists[D][0];
+            Count = Opt -> Config.LatticeCountLists[D][0];
             for (B = 1; B < FoundCount; ++B) {
-                if (Opt -> Run.LatticeCountLists[D][B] != Count) {
+                if (Opt -> Config.LatticeCountLists[D][B] != Count) {
                     fprintf(stderr,
                             "All bodies must have the same %c tile count "
                             "when stacking on %c.\n",
@@ -4286,15 +4269,15 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
         if (Count <= 0 || Count > INT_MAX)
             return FALSE;
         if (D == 0)
-            Opt -> Run.LatticeCountU = (int) Count;
+            Opt -> Config.LatticeCountU = (int) Count;
         else if (D == 1)
-            Opt -> Run.LatticeCountV = (int) Count;
+            Opt -> Config.LatticeCountV = (int) Count;
         else
-            Opt -> Run.LatticeCountW = (int) Count;
+            Opt -> Config.LatticeCountW = (int) Count;
     }
 
-    TileCount = (long long) Opt -> Run.LatticeCountU *
-                Opt -> Run.LatticeCountV * Opt -> Run.LatticeCountW;
+    TileCount = (long long) Opt -> Config.LatticeCountU *
+                Opt -> Config.LatticeCountV * Opt -> Config.LatticeCountW;
     if (TileCount <= 0 || TileCount > INT_MAX) {
         IritTrivTVFree(Opt -> DefMap);
         Opt -> DefMap = NULL;
@@ -4306,8 +4289,8 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
             "Loaded %d macro body%s as one logical %d x %d x %d lattice "
             "stacked on %c.\n",
             FoundCount, FoundCount == 1 ? "" : "s",
-            Opt -> Run.LatticeCountU, Opt -> Run.LatticeCountV,
-            Opt -> Run.LatticeCountW, "UVW"[Axis]);
+            Opt -> Config.LatticeCountU, Opt -> Config.LatticeCountV,
+            Opt -> Config.LatticeCountW, "UVW"[Axis]);
     return TRUE;
 }
 
@@ -4317,12 +4300,12 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
 ***************************************************************************/
 static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 {
-    fprintf(F, "lattice_type,%d\n", Opt -> Run.LatticeType);
+    fprintf(F, "lattice_type,%d\n", Opt -> Config.LatticeType);
     fprintf(F, "lattice_counts,%d,%d,%d\n",
-            Opt -> Run.LatticeCountU,
-            Opt -> Run.LatticeCountV,
-            Opt -> Run.LatticeCountW);
-    fprintf(F, "mesh_sample,%d\n", Opt -> Run.MeshSample);
+            Opt -> Config.LatticeCountU,
+            Opt -> Config.LatticeCountV,
+            Opt -> Config.LatticeCountW);
+    fprintf(F, "mesh_sample,%d\n", Opt -> Config.MeshSample);
     fprintf(F, "mesh_type,%d\n", OPT_LEGACY_MESH_TYPE);
 }
 
@@ -4345,11 +4328,11 @@ static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
         sscanf(Line, "mesh_type,%d %c", &MeshType, &Extra) != 1)
         return FALSE;
 
-    return LatticeType == Opt -> Run.LatticeType &&
-           U == Opt -> Run.LatticeCountU &&
-           V == Opt -> Run.LatticeCountV &&
-           W == Opt -> Run.LatticeCountW &&
-           MeshSample == Opt -> Run.MeshSample &&
+    return LatticeType == Opt -> Config.LatticeType &&
+           U == Opt -> Config.LatticeCountU &&
+           V == Opt -> Config.LatticeCountV &&
+           W == Opt -> Config.LatticeCountW &&
+           MeshSample == Opt -> Config.MeshSample &&
            MeshType == OPT_LEGACY_MESH_TYPE;
 }
 
@@ -4602,7 +4585,7 @@ static void InitializeWorkflowState(OptWorkflowStateStruct *Opt)
 
 static void ResolveLatticeLayout(OptWorkflowStateStruct *Opt)
 {
-    switch (Opt -> Run.LatticeType) {
+    switch (Opt -> Config.LatticeType) {
         case 0: /* Face (3D Cross 1): 6 face arms. */
         case 1: /* Face (3D Cross 2): 6 face arms. */
             Opt -> L = 7;
@@ -4620,9 +4603,9 @@ static void ResolveLatticeLayout(OptWorkflowStateStruct *Opt)
             return;
     }
 
-    Opt -> MeshSample = (Opt -> Run.MeshSample - 1) *
-        (Opt -> Run.MeshSample - 1) *
-        (Opt -> Run.MeshSample - 1);
+    Opt -> MeshSample = (Opt -> Config.MeshSample - 1) *
+        (Opt -> Config.MeshSample - 1) *
+        (Opt -> Config.MeshSample - 1);
 }
 
 /***************************************************************************
@@ -4638,7 +4621,7 @@ static void InitOrResetResultsArray(OptWorkflowStateStruct *Opt)
     }
 
     Opt -> Results =
-        (CagdRType *) OptAllocZero((size_t) Opt -> Run.MaxIterations * 3,
+        (CagdRType *) OptAllocZero((size_t) Opt -> Config.MaxIterations * 3,
                                    sizeof(CagdRType));
     if (Opt -> Results == NULL)
         OptFatal("Failed to allocate results array");
@@ -4665,12 +4648,12 @@ static int InitLatticeModel(OptWorkflowStateStruct *Opt)
     if (Opt -> Lattice.Tiles == NULL)
         return FALSE;
 
-    for (W = 0; W < Opt -> Run.LatticeCountW; ++W) {
-        for (V = 0; V < Opt -> Run.LatticeCountV; ++V) {
-            for (U = 0; U < Opt -> Run.LatticeCountU; ++U) {
+    for (W = 0; W < Opt -> Config.LatticeCountW; ++W) {
+        for (V = 0; V < Opt -> Config.LatticeCountV; ++V) {
+            for (U = 0; U < Opt -> Config.LatticeCountU; ++U) {
                 int L;
-                int TileIndex = U + Opt -> Run.LatticeCountU *
-                    (V + Opt -> Run.LatticeCountV * W);
+                int TileIndex = U + Opt -> Config.LatticeCountU *
+                    (V + Opt -> Config.LatticeCountV * W);
                 OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
 
                 Tile -> SubTileCount = Opt -> L;
@@ -4687,7 +4670,7 @@ static int InitLatticeModel(OptWorkflowStateStruct *Opt)
                 for (L = 0; L < Tile -> SubTileCount; ++L)
                     Tile -> SubTiles[L].FirstElementIndex = -1;
                 for (L = Opt -> LDef; L < Opt -> LDef + Opt -> LMin; ++L)
-                    Tile -> SubTiles[L].Thickness = Opt -> Run.InitialThickness;
+                    Tile -> SubTiles[L].Thickness = Opt -> Config.InitialThickness;
             }
         }
     }
@@ -4746,10 +4729,10 @@ static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt)
         int I, D;
 
         for (D = 0; D < 3; ++D)
-            Counts[D] = Opt -> Run.LatticeCountLists[D][B];
+            Counts[D] = Opt -> Config.LatticeCountLists[D][B];
         for (I = 0; I < B; ++I)
             Origin[Opt -> StackAxis] +=
-                Opt -> Run.LatticeCountLists[Opt -> StackAxis][I];
+                Opt -> Config.LatticeCountLists[Opt -> StackAxis][I];
 
         for (W = 0; W < Counts[2]; ++W) {
             for (V = 0; V < Counts[1]; ++V) {
@@ -4757,8 +4740,8 @@ static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt)
                     int GlobalU = Origin[0] + U;
                     int GlobalV = Origin[1] + V;
                     int GlobalW = Origin[2] + W;
-                    int TileIndex = GlobalU + Opt -> Run.LatticeCountU *
-                        (GlobalV + Opt -> Run.LatticeCountV * GlobalW);
+                    int TileIndex = GlobalU + Opt -> Config.LatticeCountU *
+                        (GlobalV + Opt -> Config.LatticeCountV * GlobalW);
                     OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
 
                     for (L = 0; L < Tile -> SubTileCount; ++L) {
@@ -4879,15 +4862,7 @@ static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
         Opt -> DefMap = NULL;
         Opt -> DefMapCount = 0;
     }
-    {
-        int D;
-        for (D = 0; D < 3; ++D) {
-            if (Opt -> Run.LatticeCountLists[D])
-                IritFree(Opt -> Run.LatticeCountLists[D]);
-            Opt -> Run.LatticeCountLists[D] = NULL;
-            Opt -> Run.LatticeCountListLengths[D] = 0;
-        }
-    }
+    OptFreeConfigArrays(&Opt -> Config);
 
     if (Opt -> Results != NULL) {
         IritFree(Opt -> Results);
@@ -4985,22 +4960,31 @@ static int ScalarFieldEnsureCapacity(OptScalarFieldStruct *Field,
     while (NewCap <= RequiredId)
         NewCap *= 2;
 
-    NewValues = (CagdRType *) OptReallocCopy(Field -> Values,
-                                             (size_t) OldCap *
-                                                 sizeof(CagdRType),
-                                             (size_t) NewCap *
-                                                 sizeof(CagdRType));
+    NewValues = (CagdRType *) OptAllocZero((size_t) NewCap,
+                                          sizeof(CagdRType));
     if (NewValues == NULL)
         return 0;
-    Field -> Values = NewValues;
 
-    NewHasValue = (CagdBType *) OptReallocCopy(Field -> HasValue,
-                                              (size_t) OldCap *
-                                                  sizeof(CagdBType),
-                                              (size_t) NewCap *
-                                                  sizeof(CagdBType));
-    if (NewHasValue == NULL)
+    NewHasValue = (CagdBType *) OptAllocZero((size_t) NewCap,
+                                            sizeof(CagdBType));
+    if (NewHasValue == NULL) {
+        IritFree(NewValues);
         return 0;
+    }
+
+    if (OldCap > 0) {
+        IRIT_GEN_COPY(NewValues, Field -> Values,
+                      (size_t) OldCap * sizeof(CagdRType));
+        IRIT_GEN_COPY(NewHasValue, Field -> HasValue,
+                      (size_t) OldCap * sizeof(CagdBType));
+    }
+
+    if (Field -> Values != NULL)
+        IritFree(Field -> Values);
+    if (Field -> HasValue != NULL)
+        IritFree(Field -> HasValue);
+
+    Field -> Values = NewValues;
     Field -> HasValue = NewHasValue;
     Field -> Capacity = NewCap;
     return 1;
@@ -5048,71 +5032,52 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
 * Initializes defaults for run-specific inputs before the configuration     *
 * file is parsed.                                                           *
 ****************************************************************************/
-static void OptSetDefaultRunInputs(OptRunInputStruct *Run)
-{
-    IRIT_ZAP_MEM(Run, sizeof(OptRunInputStruct));
-
-    Run -> SimulationType = 1;
-    Run -> LatticeType = -1;
-    Run -> SkinThickness = 0.0;
-    Run -> LatticeCountU = -1;
-    Run -> LatticeCountV = -1;
-    Run -> LatticeCountW = -1;
-    Run -> BodyStackAxis = -1;
-    Run -> UseMicroStructFFD = TRUE;
-    Run -> InitialThickness = OPT_INVALID_REAL;
-    Run -> MeshSample = -1;
-    Run -> MaxIterations = -1;
-    Run -> ConvergenceIterations = 3;
-    Run -> ThicknessChangeTolerance =
-        5.0e-3 * OPT_MAX_TILE_THICKNESS;
-    Run -> TargetVolumeFraction = OPT_INVALID_REAL;
-    Run -> TargetVolumeFractionTol = OPT_INVALID_REAL;
-    Run -> OptimizationAlgorithm = 1;
-}
-
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Initializes defaults for machine, material, and optimization settings.    *
-****************************************************************************/
-static void OptSetDefaultConfigInputs(OptConfigInputStruct *Cfg)
-{
-    IRIT_ZAP_MEM(Cfg, sizeof(OptConfigInputStruct));
-
-    Cfg -> Scale = 0.015;
-    Cfg -> Density = 2700.0;
-    Cfg -> YoungsModulus = 6.9e10;
-    Cfg -> PoissonRatio = 0.33;
-    Cfg -> SedValue = 0.15;
-    Cfg -> MinimumThickness = 1.0e-5;
-    Cfg -> SafetyFactorSed = 1.1;
-    Cfg -> RemoveThinTiles = FALSE;
-}
-
 static void OptSetDefaultConfig(OptConfigStruct *Config)
 {
     IRIT_ZAP_MEM(Config, sizeof(*Config));
 
-    /* Backward compatible default: run the historical initial volume search. */
-    GlblUseTargetVolume = TRUE;
-
-    OptSetDefaultRunInputs(&Config -> Run);
-    OptSetDefaultConfigInputs(&Config -> Environment);
-    snprintf(Config -> Environment.AnsysExe,
-             sizeof(Config -> Environment.AnsysExe),
+    Config -> SimulationType = 1;
+    Config -> LatticeType = -1;
+    Config -> SkinThickness = 0.0;
+    Config -> LatticeCountU = -1;
+    Config -> LatticeCountV = -1;
+    Config -> LatticeCountW = -1;
+    Config -> BodyStackAxis = -1;
+    Config -> UseMicroStructFFD = TRUE;
+    Config -> InitialThickness = OPT_INVALID_REAL;
+    Config -> MeshSample = -1;
+    Config -> MaxIterations = -1;
+    Config -> ConvergenceIterations = 3;
+    Config -> ThicknessChangeTolerance =
+        5.0e-3 * OPT_MAX_TILE_THICKNESS;
+    Config -> TargetVolumeFraction = OPT_INVALID_REAL;
+    Config -> TargetVolumeFractionTol = OPT_INVALID_REAL;
+    Config -> OptimizationAlgorithm = 1;
+    Config -> UseTargetVolume = TRUE;
+    Config -> GeometryOnly = FALSE;
+    Config -> Scale = 0.015;
+    Config -> Density = 2700.0;
+    Config -> YoungsModulus = 6.9e10;
+    Config -> PoissonRatio = 0.33;
+    Config -> SedValue = 0.15;
+    Config -> MinimumThickness = 1.0e-5;
+    Config -> SafetyFactorSed = 1.1;
+    Config -> RemoveThinTiles = FALSE;
+    snprintf(Config -> AnsysExe,
+             sizeof(Config -> AnsysExe),
              "%s",
              "C:\\Program Files\\ANSYS Inc\\v222\\Framework\\bin\\Win64\\RunWB2.exe");
 }
 
-static void OptFreeConfig(OptConfigStruct *Config)
+static void OptFreeConfigArrays(OptConfigStruct *Config)
 {
     int D;
 
     for (D = 0; D < 3; ++D) {
-        if (Config -> Run.LatticeCountLists[D] != NULL)
-            IritFree(Config -> Run.LatticeCountLists[D]);
-        Config -> Run.LatticeCountLists[D] = NULL;
-        Config -> Run.LatticeCountListLengths[D] = 0;
+        if (Config -> LatticeCountLists[D] != NULL)
+            IritFree(Config -> LatticeCountLists[D]);
+        Config -> LatticeCountLists[D] = NULL;
+        Config -> LatticeCountListLengths[D] = 0;
     }
 }
 
@@ -5120,51 +5085,49 @@ static void OptFreeConfig(OptConfigStruct *Config)
  * Explicit nonempty values remain valid overrides. */
 static int OptResolveDefaultPaths(OptConfigStruct *Config)
 {
-    OptRunInputStruct *Run = &Config -> Run;
-    OptConfigInputStruct *Cfg = &Config -> Environment;
     char AnsysDir[OPT_MAX_PATH];
 
-    if (OptIsBlank(Cfg -> BaseFolder)) {
+    if (OptIsBlank(Config -> BaseFolder)) {
         fprintf(stderr, "Missing root_folder in configuration file.\n");
         return FALSE;
     }
-    if (OptIsBlank(Cfg -> WorkDir))
-        OptPathJoin(Cfg -> WorkDir, sizeof(Cfg -> WorkDir),
-                    Cfg -> BaseFolder, "TEMP_SET");
-    OptPathJoin(AnsysDir, sizeof(AnsysDir), Cfg -> BaseFolder, "ANSYS_SET");
+    if (OptIsBlank(Config -> WorkDir))
+        OptPathJoin(Config -> WorkDir, sizeof(Config -> WorkDir),
+                    Config -> BaseFolder, "TEMP_SET");
+    OptPathJoin(AnsysDir, sizeof(AnsysDir), Config -> BaseFolder, "ANSYS_SET");
 
 #define OPT_DEFAULT_PATH(Field, Parent, Name) \
     do { if (OptIsBlank(Field)) \
         OptPathJoin(Field, sizeof(Field), Parent, Name); } while (0)
-    if (OptIsBlank(Run -> MacroShapePath))
-        snprintf(Run -> MacroShapePath,
-                 sizeof(Run -> MacroShapePath),
+    if (OptIsBlank(Config -> MacroShapePath))
+        snprintf(Config -> MacroShapePath,
+                 sizeof(Config -> MacroShapePath),
                  "%s",
                  "DefMap.itd");
     {
         char MacroShapeFile[OPT_MAX_PATH];
 
         snprintf(MacroShapeFile, sizeof(MacroShapeFile), "%s",
-                 Run -> MacroShapePath);
-        OptPathJoin(Run -> MacroShapePath,
-                    sizeof(Run -> MacroShapePath),
-                    Cfg -> WorkDir,
+                 Config -> MacroShapePath);
+        OptPathJoin(Config -> MacroShapePath,
+                    sizeof(Config -> MacroShapePath),
+                    Config -> WorkDir,
                     MacroShapeFile);
     }
-    OPT_DEFAULT_PATH(Cfg -> AnsysProject, AnsysDir, "WB2.wbpj");
-    OPT_DEFAULT_PATH(Cfg -> AnsysJournal, AnsysDir, "RunWB.wbjn");
+    OPT_DEFAULT_PATH(Config -> AnsysProject, AnsysDir, "WB2.wbpj");
+    OPT_DEFAULT_PATH(Config -> AnsysJournal, AnsysDir, "RunWB.wbjn");
     /* The mesh exporter owns this file; it is not a user setting. */
-    OptPathJoin(Cfg -> InpFile, sizeof(Cfg -> InpFile),
-                Cfg -> WorkDir, "optimized_geo.inp");
-    OPT_DEFAULT_PATH(Cfg -> ItdOutputFile, Cfg -> WorkDir, "optimized_geo.itd");
-    OPT_DEFAULT_PATH(Cfg -> SedFile, Cfg -> WorkDir, "SED.txt");
-    OPT_DEFAULT_PATH(Cfg -> VolumeFile, Cfg -> WorkDir, "VOLUME.txt");
-    OPT_DEFAULT_PATH(Cfg -> DataNewFile, Cfg -> WorkDir, "data_new.csv");
-    OPT_DEFAULT_PATH(Cfg -> DataPrevFile, Cfg -> WorkDir, "data_prev.csv");
-    OPT_DEFAULT_PATH(Cfg -> DesignParametersFile, Cfg -> WorkDir,
+    OptPathJoin(Config -> InpFile, sizeof(Config -> InpFile),
+                Config -> WorkDir, "optimized_geo.inp");
+    OPT_DEFAULT_PATH(Config -> ItdOutputFile, Config -> WorkDir, "optimized_geo.itd");
+    OPT_DEFAULT_PATH(Config -> SedFile, Config -> WorkDir, "SED.txt");
+    OPT_DEFAULT_PATH(Config -> VolumeFile, Config -> WorkDir, "VOLUME.txt");
+    OPT_DEFAULT_PATH(Config -> DataNewFile, Config -> WorkDir, "data_new.csv");
+    OPT_DEFAULT_PATH(Config -> DataPrevFile, Config -> WorkDir, "data_prev.csv");
+    OPT_DEFAULT_PATH(Config -> DesignParametersFile, Config -> WorkDir,
                      "DesignParameters.csv");
-    if (OptIsBlank(Cfg -> SummaryFile))
-        snprintf(Cfg -> SummaryFile, sizeof(Cfg -> SummaryFile),
+    if (OptIsBlank(Config -> SummaryFile))
+        snprintf(Config -> SummaryFile, sizeof(Config -> SummaryFile),
                  "%s", "Summary.csv");
 #undef OPT_DEFAULT_PATH
     return TRUE;
@@ -5175,25 +5138,24 @@ static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
 {
     int D;
 
-    Opt -> Run = Config -> Run;
-    Opt -> Config = Config -> Environment;
+    Opt -> Config = *Config;
 
     /* Break the shallow pointer copy before allocating workflow-owned lists. */
     for (D = 0; D < 3; ++D)
-        Opt -> Run.LatticeCountLists[D] = NULL;
+        Opt -> Config.LatticeCountLists[D] = NULL;
 
     for (D = 0; D < 3; ++D) {
         size_t Bytes;
 
-        Bytes = (size_t) Config -> Run.LatticeCountListLengths[D] * sizeof(int);
+        Bytes = (size_t) Config -> LatticeCountListLengths[D] * sizeof(int);
         if (Bytes == 0)
             continue;
-        Opt -> Run.LatticeCountLists[D] = (int *) OptAllocZero(1, Bytes);
-        if (Opt -> Run.LatticeCountLists[D] == NULL) {
+        Opt -> Config.LatticeCountLists[D] = (int *) OptAllocZero(1, Bytes);
+        if (Opt -> Config.LatticeCountLists[D] == NULL) {
             FreeWorkflowState(Opt);
             return FALSE;
         }
-        memcpy(Opt -> Run.LatticeCountLists[D], Config -> Run.LatticeCountLists[D], Bytes);
+        memcpy(Opt -> Config.LatticeCountLists[D], Config -> LatticeCountLists[D], Bytes);
     }
     return TRUE;
 }
@@ -5269,53 +5231,51 @@ static int ParseKeyValueFile(const char *FileName,
 static int InputHandler(const char *Key, const char *Value, void *Ctx)
 {
     OptConfigStruct *Config = (OptConfigStruct *) Ctx;
-    OptRunInputStruct *Run = &Config -> Run;
-    OptConfigInputStruct *Cfg = &Config -> Environment;
 
     if (strcmp(Key, "macro_shape_file") == 0) {
-        snprintf(Run -> MacroShapePath,
-                 sizeof(Run -> MacroShapePath),
+        snprintf(Config -> MacroShapePath,
+                 sizeof(Config -> MacroShapePath),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "simulation_type") == 0)
-        return OptParseInt(Value, &Run -> SimulationType);
+        return OptParseInt(Value, &Config -> SimulationType);
     if (strcmp(Key, "lattice_type") == 0)
-        return OptParseInt(Value, &Run -> LatticeType);
+        return OptParseInt(Value, &Config -> LatticeType);
     if (strcmp(Key, "skin_thickness") == 0)
-        return OptParseReal(Value, &Run -> SkinThickness);
+        return OptParseReal(Value, &Config -> SkinThickness);
     if (strcmp(Key, "lattice_count_u") == 0) {
         if (!OptParseCountList(Value,
-                            &Run -> LatticeCountLists[0],
-                            &Run -> LatticeCountListLengths[0]))
+                            &Config -> LatticeCountLists[0],
+                            &Config -> LatticeCountListLengths[0]))
             return FALSE;
-        Run -> LatticeCountU = Run -> LatticeCountLists[0][0];
+        Config -> LatticeCountU = Config -> LatticeCountLists[0][0];
         return TRUE;
     }
     if (strcmp(Key, "lattice_count_v") == 0) {
         if (!OptParseCountList(Value,
-                            &Run -> LatticeCountLists[1],
-                            &Run -> LatticeCountListLengths[1]))
+                            &Config -> LatticeCountLists[1],
+                            &Config -> LatticeCountListLengths[1]))
             return FALSE;
-        Run -> LatticeCountV = Run -> LatticeCountLists[1][0];
+        Config -> LatticeCountV = Config -> LatticeCountLists[1][0];
         return TRUE;
     }
     if (strcmp(Key, "lattice_count_w") == 0) {
         if (!OptParseCountList(Value,
-                            &Run -> LatticeCountLists[2],
-                            &Run -> LatticeCountListLengths[2]))
+                            &Config -> LatticeCountLists[2],
+                            &Config -> LatticeCountListLengths[2]))
             return FALSE;
-        Run -> LatticeCountW = Run -> LatticeCountLists[2][0];
+        Config -> LatticeCountW = Config -> LatticeCountLists[2][0];
         return TRUE;
     }
     if (strcmp(Key, "body_stack_axis") == 0) {
         if (OPT_STRICMP(Value, "u") == 0)
-            Run -> BodyStackAxis = 0;
+            Config -> BodyStackAxis = 0;
         else if (OPT_STRICMP(Value, "v") == 0)
-            Run -> BodyStackAxis = 1;
+            Config -> BodyStackAxis = 1;
         else if (OPT_STRICMP(Value, "w") == 0)
-            Run -> BodyStackAxis = 2;
+            Config -> BodyStackAxis = 2;
         else {
             fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
             return FALSE;
@@ -5323,122 +5283,122 @@ static int InputHandler(const char *Key, const char *Value, void *Ctx)
         return TRUE;
     }
     if (strcmp(Key, "use_microstructure_ffd") == 0) {
-        Run -> UseMicroStructFFD = OptParseBool(Value);
+        Config -> UseMicroStructFFD = OptParseBool(Value);
         return TRUE;
     }
     if (strcmp(Key, "initial_thickness") == 0)
-        return OptParseReal(Value, &Run -> InitialThickness);
+        return OptParseReal(Value, &Config -> InitialThickness);
     if (strcmp(Key, "mesh_sample") == 0)
-        return OptParseInt(Value, &Run -> MeshSample);
+        return OptParseInt(Value, &Config -> MeshSample);
     if (strcmp(Key, "max_iterations") == 0)
-        return OptParseInt(Value, &Run -> MaxIterations);
+        return OptParseInt(Value, &Config -> MaxIterations);
     if (strcmp(Key, "convergence_iterations") == 0)
-        return OptParseInt(Value, &Run -> ConvergenceIterations);
+        return OptParseInt(Value, &Config -> ConvergenceIterations);
     if (strcmp(Key, "thickness_change_tolerance") == 0)
-        return OptParseReal(Value, &Run -> ThicknessChangeTolerance);
+        return OptParseReal(Value, &Config -> ThicknessChangeTolerance);
     if (strcmp(Key, "use_target_volume") == 0) {
-        GlblUseTargetVolume = OptParseBool(Value);
+        Config -> UseTargetVolume = OptParseBool(Value);
         return TRUE;
     }
     if (strcmp(Key, "target_volume_fraction") == 0) {
         if (OptIsBlank(Value))
             return TRUE;
-        return OptParseReal(Value, &Run -> TargetVolumeFraction);
+        return OptParseReal(Value, &Config -> TargetVolumeFraction);
     }
     if (strcmp(Key, "target_volume_fraction_tol") == 0) {
         if (OptIsBlank(Value))
             return TRUE;
-        return OptParseReal(Value, &Run -> TargetVolumeFractionTol);
+        return OptParseReal(Value, &Config -> TargetVolumeFractionTol);
     }
     if (strcmp(Key, "optimization_algorithm") == 0) {
         if (OptIsBlank(Value))
             return TRUE;
-        return OptParseInt(Value, &Run -> OptimizationAlgorithm);
+        return OptParseInt(Value, &Config -> OptimizationAlgorithm);
     }
     if (strcmp(Key, "root_folder") == 0 ||
         strcmp(Key, "base_folder") == 0) {
-        snprintf(Cfg -> BaseFolder, sizeof(Cfg -> BaseFolder), "%s", Value);
+        snprintf(Config -> BaseFolder, sizeof(Config -> BaseFolder), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "work_dir") == 0) {
-        snprintf(Cfg -> WorkDir, sizeof(Cfg -> WorkDir), "%s", Value);
+        snprintf(Config -> WorkDir, sizeof(Config -> WorkDir), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "ansys_exe") == 0) {
-        snprintf(Cfg -> AnsysExe, sizeof(Cfg -> AnsysExe), "%s", Value);
+        snprintf(Config -> AnsysExe, sizeof(Config -> AnsysExe), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "ansys_project") == 0) {
-        snprintf(Cfg -> AnsysProject,
-                 sizeof(Cfg -> AnsysProject),
+        snprintf(Config -> AnsysProject,
+                 sizeof(Config -> AnsysProject),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "ansys_journal") == 0) {
-        snprintf(Cfg -> AnsysJournal,
-                 sizeof(Cfg -> AnsysJournal),
+        snprintf(Config -> AnsysJournal,
+                 sizeof(Config -> AnsysJournal),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "itd_output_file") == 0) {
-        snprintf(Cfg -> ItdOutputFile,
-                 sizeof(Cfg -> ItdOutputFile),
+        snprintf(Config -> ItdOutputFile,
+                 sizeof(Config -> ItdOutputFile),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "sed_file") == 0) {
-        snprintf(Cfg -> SedFile, sizeof(Cfg -> SedFile), "%s", Value);
+        snprintf(Config -> SedFile, sizeof(Config -> SedFile), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "volume_file") == 0) {
-        snprintf(Cfg -> VolumeFile, sizeof(Cfg -> VolumeFile), "%s", Value);
+        snprintf(Config -> VolumeFile, sizeof(Config -> VolumeFile), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "data_new_file") == 0) {
-        snprintf(Cfg -> DataNewFile, sizeof(Cfg -> DataNewFile), "%s", Value);
+        snprintf(Config -> DataNewFile, sizeof(Config -> DataNewFile), "%s", Value);
         return TRUE;
     }
     if (strcmp(Key, "data_prev_file") == 0) {
-        snprintf(Cfg -> DataPrevFile,
-                 sizeof(Cfg -> DataPrevFile),
+        snprintf(Config -> DataPrevFile,
+                 sizeof(Config -> DataPrevFile),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "design_parameters_file") == 0) {
-        snprintf(Cfg -> DesignParametersFile,
-                 sizeof(Cfg -> DesignParametersFile),
+        snprintf(Config -> DesignParametersFile,
+                 sizeof(Config -> DesignParametersFile),
                  "%s",
                  Value);
         return TRUE;
     }
     if (strcmp(Key, "summary_file") == 0) {
-        snprintf(Cfg -> SummaryFile,
-                 sizeof(Cfg -> SummaryFile),
+        snprintf(Config -> SummaryFile,
+                 sizeof(Config -> SummaryFile),
                  "%s",
                  Value);
         return TRUE;
     }
 
     if (strcmp(Key, "scale") == 0)
-        return OptParseReal(Value, &Cfg -> Scale);
+        return OptParseReal(Value, &Config -> Scale);
     if (strcmp(Key, "density") == 0)
-        return OptParseReal(Value, &Cfg -> Density);
+        return OptParseReal(Value, &Config -> Density);
     if (strcmp(Key, "youngs_modulus") == 0)
-        return OptParseReal(Value, &Cfg -> YoungsModulus);
+        return OptParseReal(Value, &Config -> YoungsModulus);
     if (strcmp(Key, "poisson_ratio") == 0)
-        return OptParseReal(Value, &Cfg -> PoissonRatio);
+        return OptParseReal(Value, &Config -> PoissonRatio);
     if (strcmp(Key, "sed_value") == 0)
-        return OptParseReal(Value, &Cfg -> SedValue);
+        return OptParseReal(Value, &Config -> SedValue);
     if (strcmp(Key, "minimum_thickness") == 0)
-        return OptParseReal(Value, &Cfg -> MinimumThickness);
+        return OptParseReal(Value, &Config -> MinimumThickness);
     if (strcmp(Key, "safety_factor_sed") == 0)
-        return OptParseReal(Value, &Cfg -> SafetyFactorSed);
+        return OptParseReal(Value, &Config -> SafetyFactorSed);
     if (strcmp(Key, "remove_thin_tiles") == 0) {
-        Cfg -> RemoveThinTiles = OptParseBool(Value);
+        Config -> RemoveThinTiles = OptParseBool(Value);
         return TRUE;
     }
 
@@ -5464,93 +5424,92 @@ static CagdBType OptParseBool(const char *Value)
 * DESCRIPTION:                                                              *
 * Verifies the unified configuration after it has been parsed.              *
 ****************************************************************************/
-static int ValidateInputs(const OptRunInputStruct *Run,
-                          const OptConfigInputStruct *Cfg)
+static int ValidateInputs(const OptConfigStruct *Config)
 {
-    if (Run -> BodyStackAxis < -1 || Run -> BodyStackAxis > 2) {
+    if (Config -> BodyStackAxis < -1 || Config -> BodyStackAxis > 2) {
         fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
         return FALSE;
     }
-    if (OptIsBlank(Run -> MacroShapePath)) {
+    if (OptIsBlank(Config -> MacroShapePath)) {
         fprintf(stderr, "Missing macro_shape_file in configuration file.\n");
         return FALSE;
     }
     {
-        size_t Len = strlen(Run -> MacroShapePath);
+        size_t Len = strlen(Config -> MacroShapePath);
 
-        if (Len < 4 || OPT_STRICMP(Run -> MacroShapePath + Len - 4,
+        if (Len < 4 || OPT_STRICMP(Config -> MacroShapePath + Len - 4,
                                    ".itd") != 0) {
             fprintf(stderr, "macro_shape_file must name an .itd file.\n");
             return FALSE;
         }
     }
-    if (Run -> SimulationType != 1 && Run -> SimulationType != 2) {
+    if (Config -> SimulationType != 1 && Config -> SimulationType != 2) {
         fprintf(stderr,
                 "simulation_type must be 1 (ANSYS) or 2 (CalculiX).\n");
         return FALSE;
     }
-    if (Run -> LatticeType < 0 || Run -> LatticeType > 2 ||
-        Run -> LatticeCountU <= 0 || Run -> LatticeCountV <= 0 ||
-        Run -> LatticeCountW <= 0) {
+    if (Config -> LatticeType < 0 || Config -> LatticeType > 2 ||
+        Config -> LatticeCountU <= 0 || Config -> LatticeCountV <= 0 ||
+        Config -> LatticeCountW <= 0) {
         fprintf(stderr, "Invalid lattice parameters in configuration file.\n");
         return FALSE;
     }
-    if (!isfinite(Run -> SkinThickness) || Run -> SkinThickness < 0.0 ||
-        Run -> SkinThickness > 0.5) {
+    if (!isfinite(Config -> SkinThickness) || Config -> SkinThickness < 0.0 ||
+        Config -> SkinThickness > 0.5) {
         fprintf(stderr, "skin_thickness must be between 0 and 0.5.\n");
         return FALSE;
     }
-    if (Run -> SkinThickness > 0.0 && Run -> LatticeType != 0) {
+    if (Config -> SkinThickness > 0.0 && Config -> LatticeType != 0) {
         fprintf(stderr,
                 "skin_thickness is supported only for lattice_type 0.\n");
         return FALSE;
     }
-    if (Run -> LatticeCountListLengths[0] != Run -> LatticeCountListLengths[1] ||
-        Run -> LatticeCountListLengths[0] != Run -> LatticeCountListLengths[2]) {
+    if (Config -> LatticeCountListLengths[0] != Config -> LatticeCountListLengths[1] ||
+        Config -> LatticeCountListLengths[0] != Config -> LatticeCountListLengths[2]) {
         fprintf(stderr, "U, V and W count lists must have equal lengths.\n");
         return FALSE;
     }
-    if ((double) (Run -> MeshSample - 1) * (Run -> MeshSample - 1) *
-        (Run -> MeshSample - 1) > INT_MAX) {
+    if ((double) (Config -> MeshSample - 1) * (Config -> MeshSample - 1) *
+        (Config -> MeshSample - 1) > INT_MAX) {
         fprintf(stderr, "mesh_sample is too large.\n");
         return FALSE;
     }
-    if (Cfg -> Scale <= 0.0 || !isfinite(Cfg -> Scale))
+    if (Config -> Scale <= 0.0 || !isfinite(Config -> Scale))
         return FALSE;
-    if (Cfg -> RemoveThinTiles) {
+    if (Config -> RemoveThinTiles) {
         fprintf(stderr,
                 "remove_thin_tiles must be false: persistent FEM/subtile "
                 "topology requires the element set to remain unchanged.\n");
         return FALSE;
     }
-    if (Run -> InitialThickness <= 0.0 || Run -> MeshSample <= 1 ||
-        Run -> MaxIterations <= 0) {
+    if (Config -> InitialThickness <= 0.0 || Config -> MeshSample <= 1 ||
+        Config -> MaxIterations <= 0) {
         fprintf(stderr,
                 "Invalid initial thickness, mesh sample, or max iterations "
                 "in configuration file.\n");
         return FALSE;
     }
-    if (Run -> ConvergenceIterations <= 0) {
+    if (Config -> ConvergenceIterations <= 0) {
         fprintf(stderr, "convergence_iterations must be at least 1.\n");
         return FALSE;
     }
-    if (Run -> ThicknessChangeTolerance <= 0.0 ||
-        !isfinite(Run -> ThicknessChangeTolerance)) {
+    if (Config -> ThicknessChangeTolerance <= 0.0 ||
+        !isfinite(Config -> ThicknessChangeTolerance)) {
         fprintf(stderr, "thickness_change_tolerance must be positive.\n");
         return FALSE;
     }
-    if (OptIsBlank(Cfg -> BaseFolder) || OptIsBlank(Cfg -> WorkDir) ||
-        OptIsBlank(Cfg -> InpFile) || OptIsBlank(Cfg -> ItdOutputFile) ||
-        OptIsBlank(Cfg -> SedFile) || OptIsBlank(Cfg -> VolumeFile) ||
-        OptIsBlank(Cfg -> DataNewFile) || OptIsBlank(Cfg -> DataPrevFile) ||
-        OptIsBlank(Cfg -> DesignParametersFile) ||
-        OptIsBlank(Cfg -> SummaryFile)) {
+    if (OptIsBlank(Config -> BaseFolder) || OptIsBlank(Config -> WorkDir) ||
+        OptIsBlank(Config -> InpFile) || OptIsBlank(Config -> ItdOutputFile) ||
+        OptIsBlank(Config -> SedFile) || OptIsBlank(Config -> VolumeFile) ||
+        OptIsBlank(Config -> DataNewFile) || OptIsBlank(Config -> DataPrevFile) ||
+        OptIsBlank(Config -> DesignParametersFile) ||
+        OptIsBlank(Config -> SummaryFile)) {
         fprintf(stderr, "Missing required paths in configuration file.\n");
         return FALSE;
     }
-    if (Run -> SimulationType == 1 &&
-        (OptIsBlank(Cfg -> AnsysExe) || OptIsBlank(Cfg -> AnsysProject) ||
-         OptIsBlank(Cfg -> AnsysJournal))) {
+    if (Config -> SimulationType == 1 &&
+        (OptIsBlank(Config -> AnsysExe) || OptIsBlank(Config -> AnsysProject) ||
+         OptIsBlank(Config -> AnsysJournal))) {
         fprintf(stderr,
                 "ANSYS paths are required when simulation_type is 1.\n");
         return FALSE;

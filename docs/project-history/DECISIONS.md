@@ -1,5 +1,22 @@
 # Design Decisions
 
+## D-011 — Expose one flat optimization configuration object
+
+Date: 2026-11-07
+
+Decision: every externally supplied run, lattice, solver, material, path, and
+execution-mode setting is stored directly in `OptConfigStruct`; `IritOptRun()`
+accepts only a pointer to that object.
+
+Reason: the planned IRIT-script interconnection needs one unambiguous API
+payload. Nested run/environment types, a process-global volume-search flag,
+and a separate geometry-only argument created multiple configuration channels
+and made scripted invocation state-dependent.
+
+Ownership: callers own their configuration and count arrays. The workflow
+deep-copies the complete structure and its dynamic count arrays, so runtime
+updates and cleanup do not alter caller-owned input.
+
 ## D-001 — Store durable project records beside the source
 
 Date: 2026-10-24

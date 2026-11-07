@@ -3,6 +3,47 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-07 — Simplify configuration cleanup and make field growth atomic
+
+Purpose: remove duplicated ownership cleanup and prevent partially resized
+parallel scalar-field arrays.
+
+Changes:
+
+- Replaced the duplicated lattice-count-array cleanup loops with one
+  `OptFreeConfigArrays()` helper used by caller and workflow configurations.
+- Changed `ScalarFieldEnsureCapacity()` to allocate both replacement arrays
+  before changing the field, copy existing values only after both allocations
+  succeed, and then release the old arrays.
+
+Verification:
+
+- Visual C++ 2022 compiled the `test.c` translation unit successfully through
+  the Release x64 `ClCompile` target.
+- `git diff --check -- test.c` reported no whitespace errors.
+
+## 2026-11-07 — Consolidate all configuration into one structure
+
+Purpose: prepare the optimization entry point for a future IRIT-script wrapper
+that supplies every setting through one C configuration object.
+
+Changes:
+
+- Replaced the nested `OptRunInputStruct` and `OptConfigInputStruct` types with
+  one flat `OptConfigStruct` in `opt_config.h`.
+- Moved `UseTargetVolume` and `GeometryOnly` into `OptConfigStruct`, removing
+  the former global flag and separate `IritOptRun()` mode argument.
+- Changed workflow state to own one deep-copied `OptConfigStruct`, including
+  independent copies of the dynamic per-body lattice-count arrays.
+- Updated parsing, defaults, path resolution, validation, and all workflow
+  field access to use the same configuration object.
+
+Verification:
+
+- Visual C++ 2022 compiled the `test.c` translation unit successfully through
+  the `ClCompile` MSBuild target in Release x64 configuration.
+- `git diff --check -- test.c opt_config.h` reported no whitespace errors.
+
 ## 2026-11-07 — Repair skinned-tile degree unification
 
 Purpose: remove linker failures caused by calls from `test.c` to private

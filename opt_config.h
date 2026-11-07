@@ -6,7 +6,7 @@
 #define IRIT_OPT_MAX_PATH 1024
 #define IRIT_OPT_MAX_NAME 128
 
-typedef struct OptRunInputStruct {
+typedef struct OptConfigStruct {
     char MacroShapePath[IRIT_OPT_MAX_PATH];
     int SimulationType;
     int LatticeType;
@@ -24,9 +24,9 @@ typedef struct OptRunInputStruct {
     CagdRType TargetVolumeFraction;
     CagdRType TargetVolumeFractionTol;
     int OptimizationAlgorithm;
-} OptRunInputStruct;
+    CagdBType UseTargetVolume;
+    CagdBType GeometryOnly;
 
-typedef struct OptConfigInputStruct {
     char BaseFolder[IRIT_OPT_MAX_PATH];
     char WorkDir[IRIT_OPT_MAX_PATH];
     char AnsysExe[IRIT_OPT_MAX_PATH];
@@ -43,13 +43,8 @@ typedef struct OptConfigInputStruct {
     CagdRType Scale, Density, YoungsModulus, PoissonRatio, SedValue;
     CagdRType MinimumThickness, SafetyFactorSed;
     CagdBType RemoveThinTiles;
-} OptConfigInputStruct;
-
-typedef struct OptConfigStruct {
-    OptRunInputStruct Run;
-    OptConfigInputStruct Environment;
 } OptConfigStruct;
 
-int IritOptRun(const OptConfigStruct *Config, CagdBType GeometryOnly);
+int IritOptRun(const OptConfigStruct *Config);
 
 #endif

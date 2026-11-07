@@ -14,8 +14,8 @@ thicknesses over repeated iterations.
 
 - `test.c`: optimization driver, geometry generation, solver integration,
   result mapping, design updates, and utility code.
-- `opt_config.h`: public configuration structures and `IritOptRun()` entry
-  point declaration.
+- `opt_config.h`: the single flat public `OptConfigStruct` and the
+  `IritOptRun(const OptConfigStruct *)` entry-point declaration.
 - `opt_config.txt`: editable run, material, optimization, and path settings.
 
 The `t1` directory contains older comparison copies. It is not a substitute
