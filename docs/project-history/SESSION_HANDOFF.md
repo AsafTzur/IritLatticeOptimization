@@ -2,6 +2,16 @@
 
 Last updated: 2026-11-11
 
+## 2026-11-11 configuration parser extraction
+
+The text configuration implementation now lives in
+`optimization_config_parser.c/.h`. `test.c` calls
+`OptimizationConfigLoadFile()` only in its command-line adapter; the core
+`IritOptRun(const OptConfigStruct *)` entry point remains independent and uses
+`OptimizationConfigValidate()`. This is the intended boundary for a future
+IRIT-script adapter that constructs `OptConfigStruct` directly. Both source
+files compiled successfully with the Release x64 `ClCompile` target.
+
 ## 2026-11-11 current skinned-tile refinement setting
 
 `OPT_SKIN_REFINE_LEVEL` is 4 in the current `test.c`. This source state was

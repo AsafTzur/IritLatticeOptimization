@@ -3,6 +3,29 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-11 — Extract text configuration parsing from test.c
+
+Purpose: isolate the temporary text-file input mechanism from the optimization
+engine so a future IRIT-script wrapper can provide the same configuration
+structure directly.
+
+Changes:
+
+- Added `optimization_config_parser.c/.h` with configuration initialization,
+  text-file loading, path resolution, validation, and owned-array cleanup.
+- Removed the parser implementation and parser-only helpers from `test.c`.
+- Kept `IritOptRun(const OptConfigStruct *)` parser-independent; file-based
+  startup now calls `OptimizationConfigLoadFile()` and then passes the
+  resulting structure to `IritOptRun()`.
+- Added the parser translation unit to the local Visual Studio test project.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` and `optimization_config_parser.c`
+  together successfully through the Release x64 `ClCompile` target.
+- `git diff --check` reported no whitespace errors in the three source/header
+  files.
+
 ## 2026-11-11 — Increase skinned-tile refinement level
 
 Purpose: preserve the current tested `test.c` setting before synchronizing the

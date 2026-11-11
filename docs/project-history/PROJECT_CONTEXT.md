@@ -16,6 +16,8 @@ thicknesses over repeated iterations.
   result mapping, design updates, and utility code.
 - `opt_config.h`: the single flat public `OptConfigStruct` and the
   `IritOptRun(const OptConfigStruct *)` entry-point declaration.
+- `optimization_config_parser.c/.h`: the current text-file adapter that
+  initializes, populates, validates, and releases `OptConfigStruct` inputs.
 - `opt_config.txt`: editable run, material, optimization, and path settings.
 
 The `t1` directory contains older comparison copies. It is not a substitute

@@ -1,5 +1,18 @@
 # Design Decisions
 
+## D-012 — Keep IritOptRun independent of the text parser
+
+Date: 2026-11-11
+
+Decision: text parsing is implemented in `optimization_config_parser.c`, while
+the optimization engine accepts only a completed `OptConfigStruct` through
+`IritOptRun(const OptConfigStruct *)`.
+
+Reason: the text file is the current input adapter, not part of the optimizer's
+core contract. A future IRIT-language wrapper can initialize and populate the
+same structure, validate it, and call `IritOptRun()` without invoking or
+depending on the text parser.
+
 ## D-011 — Expose one flat optimization configuration object
 
 Date: 2026-11-07

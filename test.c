@@ -16,6 +16,7 @@
 #include "inc_irit/mvar_lib.h"
 #include "inc_irit/user_lib.h"
 #include "opt_config.h"
+#include "optimization_config_parser.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -176,10 +177,6 @@ typedef struct OptScalarFieldStruct {
 typedef CagdRType (*LclThicknessFuncType)(CagdRType u,
                                             CagdRType v,
                                             CagdRType w);
-typedef int (*OptInputHandlerFuncType)(const char *Key,
-                                       const char *Value,
-                                       void *Ctx);
-
 typedef struct OptWorkflowStateStruct OptWorkflowStateStruct;
 
 typedef struct OptNeighbourEntryStruct {
@@ -362,7 +359,6 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode);
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile, int RefinementLevel);
 
 /* Geometry/config helpers. */
-static int OptParseCountList(const char *Text, int **Values, int *Count);
 static int OptLoadDefMap(OptWorkflowStateStruct *Opt);
 static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
@@ -400,19 +396,9 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
                                    int Id,
                                    CagdRType *Value);
 
-/* Unified input parsing. */
-static void OptSetDefaultConfig(OptConfigStruct *Config);
-static void OptFreeConfigArrays(OptConfigStruct *Config);
-static int OptResolveDefaultPaths(OptConfigStruct *Config);
+/* Configuration ownership. */
 static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
                                    OptWorkflowStateStruct *Opt);
-static int LoadInputs(const char *FileName, OptConfigStruct *Config);
-static int ParseKeyValueFile(const char *FileName,
-                             OptInputHandlerFuncType Handler,
-                             void *Ctx);
-static int InputHandler(const char *Key, const char *Value, void *Ctx);
-static CagdBType OptParseBool(const char *Value);
-static int ValidateInputs(const OptConfigStruct *Config);
 
 /* File and process helpers. */
 static int EnsureDirectoryRecursive(const char *DirName);
@@ -433,8 +419,6 @@ static void OptFatal(const char *Msg);
 static void OptFatalF(const char *Fmt, const char *Arg);
 static char *OptTrim(char *Str);
 static int OptIsBlank(const char *Str);
-static void OptStripUtf8Bom(char *Line);
-static int OptParseInt(const char *Text, int *Value);
 static int OptParseReal(const char *Text, CagdRType *Value);
 static void OptPathJoin(char *Dst,
                         size_t DstSize,
@@ -493,27 +477,25 @@ int main(int Argc, char **Argv)
 ***************************************************************************/
 static int OptimizationMain(int Argc, char **Argv)
 {
+    CagdBType GeometryOnly = FALSE;
     const char *ConfigFile = "opt_config.txt";
     OptConfigStruct Config;
     int i;
 
-    OptSetDefaultConfig(&Config);
-
     for (i = 1; i < Argc; ++i) {
         if (strcmp(Argv[i], "--geometry-only") == 0)
-            Config.GeometryOnly = TRUE;
+            GeometryOnly = TRUE;
         else
             ConfigFile = Argv[i];
     }
 
-    if (!LoadInputs(ConfigFile, &Config))
+    if (!OptimizationConfigLoadFile(ConfigFile, &Config))
         OptFatalF("Failed to parse configuration file: %s", ConfigFile);
 
-    if (!ValidateInputs(&Config))
-        OptFatal("Input validation failed");
+    Config.GeometryOnly = GeometryOnly;
 
     i = IritOptRun(&Config);
-    OptFreeConfigArrays(&Config);
+    OptimizationConfigFree(&Config);
     return i ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -530,7 +512,7 @@ int IritOptRun(const OptConfigStruct *Config)
     int Ok;
 
     if (Config == NULL ||
-        !ValidateInputs(Config))
+        !OptimizationConfigValidate(Config))
         return FALSE;
     IRIT_ZAP_MEM(Opt, sizeof(*Opt));
     if (!OptCopyConfigToWorkflow(Config, Opt))
@@ -3645,16 +3627,9 @@ static IritPrsrObjectStruct *PreProcessTile(
                                             NULL);
 
             if (Opt->Config.SkinThickness > 0.0) {
-                if (!RefineTileTrivariatesUniformly(
-                    Tile,
-                    OPT_SKIN_REFINE_LEVEL)) {
-                    fprintf(stderr,
-                        "Failed to refine skinned tile.\n");
-                    return NULL;
-                }
                 if (TRUE)
                 {
-                    IritPrsrObjectStruct *UniformTile =
+                    IritPrsrObjectStruct* UniformTile =
                         IritTVUniformDegree(Tile);
 
                     if (UniformTile == NULL) {
@@ -3666,6 +3641,14 @@ static IritPrsrObjectStruct *PreProcessTile(
                     IritPrsrFreeObject(Tile);
                     Tile = UniformTile;
                 }
+                if (!RefineTileTrivariatesUniformly(
+                    Tile,
+                    OPT_SKIN_REFINE_LEVEL)) {
+                    fprintf(stderr,
+                        "Failed to refine skinned tile.\n");
+                    return NULL;
+                }
+
             }
 
             IritGeomBBComputeBboxObject(Tile, &BBox, FALSE);
@@ -4089,63 +4072,6 @@ static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Til
 * Parses one or more positive integer values from a lattice-count line.    *
 * Each value supplies the local count for one macro body.                   *
 ***************************************************************************/
-static int OptParseCountList(const char *Text, int **Values, int *Count)
-{
-    const char *P = Text;
-    int N = 0;
-    int Capacity = 0;
-    int *Result = NULL;
-
-    if (Text == NULL || Values == NULL || Count == NULL)
-        return FALSE;
-
-    while (*P != '\0') {
-        char *End;
-        long Value;
-        int *NewResult;
-
-        while (isspace((unsigned char) *P) || *P == ',' || *P == ';' ||
-               *P == 'x' || *P == 'X')
-            ++P;
-        if (*P == '\0')
-            break;
-
-        errno = 0;
-        Value = strtol(P, &End, 10);
-        if (End == P || errno == ERANGE || Value <= 0 || Value > INT_MAX)
-            goto Error;
-        P = End;
-        if (*P != '\0' && !isspace((unsigned char) *P) && *P != ',' &&
-            *P != ';' && *P != 'x' && *P != 'X')
-            goto Error;
-
-        if (N == Capacity) {
-            int NewCapacity = Capacity == 0 ? 4 : Capacity * 2;
-            NewResult = (int *) OptReallocCopy(Result,
-                                                (size_t) Capacity * sizeof(int),
-                                                (size_t) NewCapacity * sizeof(int));
-            if (NewResult == NULL)
-                goto Error;
-            Result = NewResult;
-            Capacity = NewCapacity;
-        }
-        Result[N++] = (int) Value;
-    }
-
-    if (N == 0)
-        goto Error;
-    if (*Values != NULL)
-        IritFree(*Values);
-    *Values = Result;
-    *Count = N;
-    return TRUE;
-
-Error:
-    if (Result != NULL)
-        IritFree(Result);
-    return FALSE;
-}
-
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Loads every macro-shape trivariate and resolves their count lists into    *
@@ -4862,7 +4788,7 @@ static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
         Opt -> DefMap = NULL;
         Opt -> DefMapCount = 0;
     }
-    OptFreeConfigArrays(&Opt -> Config);
+    OptimizationConfigFree(&Opt -> Config);
 
     if (Opt -> Results != NULL) {
         IritFree(Opt -> Results);
@@ -5024,115 +4950,10 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
 * Associates one finite element with a subtile, growing its pointer list.  *
 ***************************************************************************/
 /***************************************************************************
-*                           Unified Input Parsing                           *
+*                         Configuration Ownership                          *
 ***************************************************************************/
 
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Initializes defaults for run-specific inputs before the configuration     *
-* file is parsed.                                                           *
-****************************************************************************/
-static void OptSetDefaultConfig(OptConfigStruct *Config)
-{
-    IRIT_ZAP_MEM(Config, sizeof(*Config));
-
-    Config -> SimulationType = 1;
-    Config -> LatticeType = -1;
-    Config -> SkinThickness = 0.0;
-    Config -> LatticeCountU = -1;
-    Config -> LatticeCountV = -1;
-    Config -> LatticeCountW = -1;
-    Config -> BodyStackAxis = -1;
-    Config -> UseMicroStructFFD = TRUE;
-    Config -> InitialThickness = OPT_INVALID_REAL;
-    Config -> MeshSample = -1;
-    Config -> MaxIterations = -1;
-    Config -> ConvergenceIterations = 3;
-    Config -> ThicknessChangeTolerance =
-        5.0e-3 * OPT_MAX_TILE_THICKNESS;
-    Config -> TargetVolumeFraction = OPT_INVALID_REAL;
-    Config -> TargetVolumeFractionTol = OPT_INVALID_REAL;
-    Config -> OptimizationAlgorithm = 1;
-    Config -> UseTargetVolume = TRUE;
-    Config -> GeometryOnly = FALSE;
-    Config -> Scale = 0.015;
-    Config -> Density = 2700.0;
-    Config -> YoungsModulus = 6.9e10;
-    Config -> PoissonRatio = 0.33;
-    Config -> SedValue = 0.15;
-    Config -> MinimumThickness = 1.0e-5;
-    Config -> SafetyFactorSed = 1.1;
-    Config -> RemoveThinTiles = FALSE;
-    snprintf(Config -> AnsysExe,
-             sizeof(Config -> AnsysExe),
-             "%s",
-             "C:\\Program Files\\ANSYS Inc\\v222\\Framework\\bin\\Win64\\RunWB2.exe");
-}
-
-static void OptFreeConfigArrays(OptConfigStruct *Config)
-{
-    int D;
-
-    for (D = 0; D < 3; ++D) {
-        if (Config -> LatticeCountLists[D] != NULL)
-            IritFree(Config -> LatticeCountLists[D]);
-        Config -> LatticeCountLists[D] = NULL;
-        Config -> LatticeCountListLengths[D] = 0;
-    }
-}
-
-/* Expands the single configured root into the conventional run layout.
- * Explicit nonempty values remain valid overrides. */
-static int OptResolveDefaultPaths(OptConfigStruct *Config)
-{
-    char AnsysDir[OPT_MAX_PATH];
-
-    if (OptIsBlank(Config -> BaseFolder)) {
-        fprintf(stderr, "Missing root_folder in configuration file.\n");
-        return FALSE;
-    }
-    if (OptIsBlank(Config -> WorkDir))
-        OptPathJoin(Config -> WorkDir, sizeof(Config -> WorkDir),
-                    Config -> BaseFolder, "TEMP_SET");
-    OptPathJoin(AnsysDir, sizeof(AnsysDir), Config -> BaseFolder, "ANSYS_SET");
-
-#define OPT_DEFAULT_PATH(Field, Parent, Name) \
-    do { if (OptIsBlank(Field)) \
-        OptPathJoin(Field, sizeof(Field), Parent, Name); } while (0)
-    if (OptIsBlank(Config -> MacroShapePath))
-        snprintf(Config -> MacroShapePath,
-                 sizeof(Config -> MacroShapePath),
-                 "%s",
-                 "DefMap.itd");
-    {
-        char MacroShapeFile[OPT_MAX_PATH];
-
-        snprintf(MacroShapeFile, sizeof(MacroShapeFile), "%s",
-                 Config -> MacroShapePath);
-        OptPathJoin(Config -> MacroShapePath,
-                    sizeof(Config -> MacroShapePath),
-                    Config -> WorkDir,
-                    MacroShapeFile);
-    }
-    OPT_DEFAULT_PATH(Config -> AnsysProject, AnsysDir, "WB2.wbpj");
-    OPT_DEFAULT_PATH(Config -> AnsysJournal, AnsysDir, "RunWB.wbjn");
-    /* The mesh exporter owns this file; it is not a user setting. */
-    OptPathJoin(Config -> InpFile, sizeof(Config -> InpFile),
-                Config -> WorkDir, "optimized_geo.inp");
-    OPT_DEFAULT_PATH(Config -> ItdOutputFile, Config -> WorkDir, "optimized_geo.itd");
-    OPT_DEFAULT_PATH(Config -> SedFile, Config -> WorkDir, "SED.txt");
-    OPT_DEFAULT_PATH(Config -> VolumeFile, Config -> WorkDir, "VOLUME.txt");
-    OPT_DEFAULT_PATH(Config -> DataNewFile, Config -> WorkDir, "data_new.csv");
-    OPT_DEFAULT_PATH(Config -> DataPrevFile, Config -> WorkDir, "data_prev.csv");
-    OPT_DEFAULT_PATH(Config -> DesignParametersFile, Config -> WorkDir,
-                     "DesignParameters.csv");
-    if (OptIsBlank(Config -> SummaryFile))
-        snprintf(Config -> SummaryFile, sizeof(Config -> SummaryFile),
-                 "%s", "Summary.csv");
-#undef OPT_DEFAULT_PATH
-    return TRUE;
-}
-
+/* Creates a workflow-owned deep copy of the caller's configuration. */
 static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
                                    OptWorkflowStateStruct *Opt)
 {
@@ -5165,358 +4986,24 @@ static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
 * Loads all run, optimization, and machine settings from one configuration   *
 * file.                                                                     *
 ****************************************************************************/
-static int LoadInputs(const char *FileName, OptConfigStruct *Config)
-{
-    if (!ParseKeyValueFile(FileName, InputHandler, Config))
-        return FALSE;
-    return OptResolveDefaultPaths(Config);
-}
-
 /****************************************************************************
 * DESCRIPTION:                                                              *
 * Reads a key-value configuration file and dispatches each parsed entry to   *
 * the supplied handler.                                                     *
 ****************************************************************************/
-static int ParseKeyValueFile(const char *FileName,
-                             OptInputHandlerFuncType Handler,
-                             void *Ctx)
-{
-    int LineNum = 0;
-    FILE *F;
-    char Line[OPT_MAX_LINE];
-
-    F = fopen(FileName, "r");
-    if (F == NULL) {
-        fprintf(stderr, "Failed to open input file: %s\n", FileName);
-        return FALSE;
-    }
-
-    while (fgets(Line, sizeof(Line), F) != NULL) {
-        char *Eq, *Key, *Value;
-
-        ++LineNum;
-        OptStripUtf8Bom(Line);
-        Key = OptTrim(Line);
-        if (*Key == '\0' || *Key == '#')
-            continue;
-
-        Eq = strchr(Key, '=');
-        if (Eq == NULL)
-            continue;
-
-        *Eq = '\0';
-        Value = OptTrim(Eq + 1);
-        Key = OptTrim(Key);
-
-        if (!Handler(Key, Value, Ctx)) {
-            fprintf(stderr,
-                    "Invalid key or value in %s at line %d: %s\n",
-                    FileName,
-                    LineNum,
-                    Key);
-            fclose(F);
-            return FALSE;
-        }
-    }
-
-    fclose(F);
-    return TRUE;
-}
-
 /****************************************************************************
 * DESCRIPTION:                                                              *
 * Maps one key from the unified configuration file into the run or fixed     *
 * configuration structure.                                                  *
 ****************************************************************************/
-static int InputHandler(const char *Key, const char *Value, void *Ctx)
-{
-    OptConfigStruct *Config = (OptConfigStruct *) Ctx;
-
-    if (strcmp(Key, "macro_shape_file") == 0) {
-        snprintf(Config -> MacroShapePath,
-                 sizeof(Config -> MacroShapePath),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "simulation_type") == 0)
-        return OptParseInt(Value, &Config -> SimulationType);
-    if (strcmp(Key, "lattice_type") == 0)
-        return OptParseInt(Value, &Config -> LatticeType);
-    if (strcmp(Key, "skin_thickness") == 0)
-        return OptParseReal(Value, &Config -> SkinThickness);
-    if (strcmp(Key, "lattice_count_u") == 0) {
-        if (!OptParseCountList(Value,
-                            &Config -> LatticeCountLists[0],
-                            &Config -> LatticeCountListLengths[0]))
-            return FALSE;
-        Config -> LatticeCountU = Config -> LatticeCountLists[0][0];
-        return TRUE;
-    }
-    if (strcmp(Key, "lattice_count_v") == 0) {
-        if (!OptParseCountList(Value,
-                            &Config -> LatticeCountLists[1],
-                            &Config -> LatticeCountListLengths[1]))
-            return FALSE;
-        Config -> LatticeCountV = Config -> LatticeCountLists[1][0];
-        return TRUE;
-    }
-    if (strcmp(Key, "lattice_count_w") == 0) {
-        if (!OptParseCountList(Value,
-                            &Config -> LatticeCountLists[2],
-                            &Config -> LatticeCountListLengths[2]))
-            return FALSE;
-        Config -> LatticeCountW = Config -> LatticeCountLists[2][0];
-        return TRUE;
-    }
-    if (strcmp(Key, "body_stack_axis") == 0) {
-        if (OPT_STRICMP(Value, "u") == 0)
-            Config -> BodyStackAxis = 0;
-        else if (OPT_STRICMP(Value, "v") == 0)
-            Config -> BodyStackAxis = 1;
-        else if (OPT_STRICMP(Value, "w") == 0)
-            Config -> BodyStackAxis = 2;
-        else {
-            fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
-            return FALSE;
-        }
-        return TRUE;
-    }
-    if (strcmp(Key, "use_microstructure_ffd") == 0) {
-        Config -> UseMicroStructFFD = OptParseBool(Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "initial_thickness") == 0)
-        return OptParseReal(Value, &Config -> InitialThickness);
-    if (strcmp(Key, "mesh_sample") == 0)
-        return OptParseInt(Value, &Config -> MeshSample);
-    if (strcmp(Key, "max_iterations") == 0)
-        return OptParseInt(Value, &Config -> MaxIterations);
-    if (strcmp(Key, "convergence_iterations") == 0)
-        return OptParseInt(Value, &Config -> ConvergenceIterations);
-    if (strcmp(Key, "thickness_change_tolerance") == 0)
-        return OptParseReal(Value, &Config -> ThicknessChangeTolerance);
-    if (strcmp(Key, "use_target_volume") == 0) {
-        Config -> UseTargetVolume = OptParseBool(Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "target_volume_fraction") == 0) {
-        if (OptIsBlank(Value))
-            return TRUE;
-        return OptParseReal(Value, &Config -> TargetVolumeFraction);
-    }
-    if (strcmp(Key, "target_volume_fraction_tol") == 0) {
-        if (OptIsBlank(Value))
-            return TRUE;
-        return OptParseReal(Value, &Config -> TargetVolumeFractionTol);
-    }
-    if (strcmp(Key, "optimization_algorithm") == 0) {
-        if (OptIsBlank(Value))
-            return TRUE;
-        return OptParseInt(Value, &Config -> OptimizationAlgorithm);
-    }
-    if (strcmp(Key, "root_folder") == 0 ||
-        strcmp(Key, "base_folder") == 0) {
-        snprintf(Config -> BaseFolder, sizeof(Config -> BaseFolder), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "work_dir") == 0) {
-        snprintf(Config -> WorkDir, sizeof(Config -> WorkDir), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "ansys_exe") == 0) {
-        snprintf(Config -> AnsysExe, sizeof(Config -> AnsysExe), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "ansys_project") == 0) {
-        snprintf(Config -> AnsysProject,
-                 sizeof(Config -> AnsysProject),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "ansys_journal") == 0) {
-        snprintf(Config -> AnsysJournal,
-                 sizeof(Config -> AnsysJournal),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "itd_output_file") == 0) {
-        snprintf(Config -> ItdOutputFile,
-                 sizeof(Config -> ItdOutputFile),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "sed_file") == 0) {
-        snprintf(Config -> SedFile, sizeof(Config -> SedFile), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "volume_file") == 0) {
-        snprintf(Config -> VolumeFile, sizeof(Config -> VolumeFile), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "data_new_file") == 0) {
-        snprintf(Config -> DataNewFile, sizeof(Config -> DataNewFile), "%s", Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "data_prev_file") == 0) {
-        snprintf(Config -> DataPrevFile,
-                 sizeof(Config -> DataPrevFile),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "design_parameters_file") == 0) {
-        snprintf(Config -> DesignParametersFile,
-                 sizeof(Config -> DesignParametersFile),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-    if (strcmp(Key, "summary_file") == 0) {
-        snprintf(Config -> SummaryFile,
-                 sizeof(Config -> SummaryFile),
-                 "%s",
-                 Value);
-        return TRUE;
-    }
-
-    if (strcmp(Key, "scale") == 0)
-        return OptParseReal(Value, &Config -> Scale);
-    if (strcmp(Key, "density") == 0)
-        return OptParseReal(Value, &Config -> Density);
-    if (strcmp(Key, "youngs_modulus") == 0)
-        return OptParseReal(Value, &Config -> YoungsModulus);
-    if (strcmp(Key, "poisson_ratio") == 0)
-        return OptParseReal(Value, &Config -> PoissonRatio);
-    if (strcmp(Key, "sed_value") == 0)
-        return OptParseReal(Value, &Config -> SedValue);
-    if (strcmp(Key, "minimum_thickness") == 0)
-        return OptParseReal(Value, &Config -> MinimumThickness);
-    if (strcmp(Key, "safety_factor_sed") == 0)
-        return OptParseReal(Value, &Config -> SafetyFactorSed);
-    if (strcmp(Key, "remove_thin_tiles") == 0) {
-        Config -> RemoveThinTiles = OptParseBool(Value);
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
 /****************************************************************************
 * DESCRIPTION:                                                              *
 * Parses a boolean configuration value.                                     *
 ****************************************************************************/
-static CagdBType OptParseBool(const char *Value)
-{
-    if (Value == NULL)
-        return FALSE;
-    if (OPT_STRICMP(Value, "true") == 0 || strcmp(Value, "1") == 0 ||
-        OPT_STRICMP(Value, "yes") == 0 || OPT_STRICMP(Value, "on") == 0)
-        return TRUE;
-
-    return FALSE;
-}
-
 /****************************************************************************
 * DESCRIPTION:                                                              *
 * Verifies the unified configuration after it has been parsed.              *
 ****************************************************************************/
-static int ValidateInputs(const OptConfigStruct *Config)
-{
-    if (Config -> BodyStackAxis < -1 || Config -> BodyStackAxis > 2) {
-        fprintf(stderr, "body_stack_axis must be u, v, or w.\n");
-        return FALSE;
-    }
-    if (OptIsBlank(Config -> MacroShapePath)) {
-        fprintf(stderr, "Missing macro_shape_file in configuration file.\n");
-        return FALSE;
-    }
-    {
-        size_t Len = strlen(Config -> MacroShapePath);
-
-        if (Len < 4 || OPT_STRICMP(Config -> MacroShapePath + Len - 4,
-                                   ".itd") != 0) {
-            fprintf(stderr, "macro_shape_file must name an .itd file.\n");
-            return FALSE;
-        }
-    }
-    if (Config -> SimulationType != 1 && Config -> SimulationType != 2) {
-        fprintf(stderr,
-                "simulation_type must be 1 (ANSYS) or 2 (CalculiX).\n");
-        return FALSE;
-    }
-    if (Config -> LatticeType < 0 || Config -> LatticeType > 2 ||
-        Config -> LatticeCountU <= 0 || Config -> LatticeCountV <= 0 ||
-        Config -> LatticeCountW <= 0) {
-        fprintf(stderr, "Invalid lattice parameters in configuration file.\n");
-        return FALSE;
-    }
-    if (!isfinite(Config -> SkinThickness) || Config -> SkinThickness < 0.0 ||
-        Config -> SkinThickness > 0.5) {
-        fprintf(stderr, "skin_thickness must be between 0 and 0.5.\n");
-        return FALSE;
-    }
-    if (Config -> SkinThickness > 0.0 && Config -> LatticeType != 0) {
-        fprintf(stderr,
-                "skin_thickness is supported only for lattice_type 0.\n");
-        return FALSE;
-    }
-    if (Config -> LatticeCountListLengths[0] != Config -> LatticeCountListLengths[1] ||
-        Config -> LatticeCountListLengths[0] != Config -> LatticeCountListLengths[2]) {
-        fprintf(stderr, "U, V and W count lists must have equal lengths.\n");
-        return FALSE;
-    }
-    if ((double) (Config -> MeshSample - 1) * (Config -> MeshSample - 1) *
-        (Config -> MeshSample - 1) > INT_MAX) {
-        fprintf(stderr, "mesh_sample is too large.\n");
-        return FALSE;
-    }
-    if (Config -> Scale <= 0.0 || !isfinite(Config -> Scale))
-        return FALSE;
-    if (Config -> RemoveThinTiles) {
-        fprintf(stderr,
-                "remove_thin_tiles must be false: persistent FEM/subtile "
-                "topology requires the element set to remain unchanged.\n");
-        return FALSE;
-    }
-    if (Config -> InitialThickness <= 0.0 || Config -> MeshSample <= 1 ||
-        Config -> MaxIterations <= 0) {
-        fprintf(stderr,
-                "Invalid initial thickness, mesh sample, or max iterations "
-                "in configuration file.\n");
-        return FALSE;
-    }
-    if (Config -> ConvergenceIterations <= 0) {
-        fprintf(stderr, "convergence_iterations must be at least 1.\n");
-        return FALSE;
-    }
-    if (Config -> ThicknessChangeTolerance <= 0.0 ||
-        !isfinite(Config -> ThicknessChangeTolerance)) {
-        fprintf(stderr, "thickness_change_tolerance must be positive.\n");
-        return FALSE;
-    }
-    if (OptIsBlank(Config -> BaseFolder) || OptIsBlank(Config -> WorkDir) ||
-        OptIsBlank(Config -> InpFile) || OptIsBlank(Config -> ItdOutputFile) ||
-        OptIsBlank(Config -> SedFile) || OptIsBlank(Config -> VolumeFile) ||
-        OptIsBlank(Config -> DataNewFile) || OptIsBlank(Config -> DataPrevFile) ||
-        OptIsBlank(Config -> DesignParametersFile) ||
-        OptIsBlank(Config -> SummaryFile)) {
-        fprintf(stderr, "Missing required paths in configuration file.\n");
-        return FALSE;
-    }
-    if (Config -> SimulationType == 1 &&
-        (OptIsBlank(Config -> AnsysExe) || OptIsBlank(Config -> AnsysProject) ||
-         OptIsBlank(Config -> AnsysJournal))) {
-        fprintf(stderr,
-                "ANSYS paths are required when simulation_type is 1.\n");
-        return FALSE;
-    }
-    return TRUE;
-}
-
 /***************************************************************************
 *                         File and Process Helpers                          *
 ***************************************************************************/
@@ -5833,43 +5320,6 @@ static int OptIsBlank(const char *Str)
             return 0;
         ++Str;
     }
-    return 1;
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Removes an optional UTF-8 byte-order mark from the first input line.     *
-***************************************************************************/
-
-static void OptStripUtf8Bom(char *Line)
-{
-    unsigned char *Ptr = (unsigned char *)Line;
-    if (Ptr != NULL && Ptr[0] == 0xEF && Ptr[1] == 0xBB && Ptr[2] == 0xBF) {
-        memmove(Line, Line + 3, strlen(Line + 3) + 1);
-    }
-}
-
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Parses a complete base-10 integer and rejects overflow or trailing text. *
-***************************************************************************/
-
-static int OptParseInt(const char *Text, int *Value)
-{
-    char *EndPtr;
-    long V;
-
-    if (OptIsBlank(Text))
-        return 0;
-
-    V = strtol(Text, &EndPtr, 10);
-    while (EndPtr != NULL && *EndPtr != '\0' && isspace((unsigned char)*EndPtr))
-        ++EndPtr;
-
-    if (EndPtr == Text || (EndPtr != NULL && *EndPtr != '\0'))
-        return 0;
-
-    *Value = (int)V;
     return 1;
 }
 
