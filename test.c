@@ -57,7 +57,7 @@
 #define OPT_MAX_TILE_THICKNESS  0.5
 #define OPT_MIN_TILE_THICKNESS  0.001
 #define OPT_LEGACY_MESH_TYPE    1
-#define OPT_SKIN_REFINE_LEVEL   2
+#define OPT_SKIN_REFINE_LEVEL   4
 
 /* Winglet support selection.
  *

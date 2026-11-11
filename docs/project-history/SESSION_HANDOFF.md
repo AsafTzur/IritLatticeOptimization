@@ -1,6 +1,12 @@
 # Session Handoff
 
-Last updated: 2026-11-07
+Last updated: 2026-11-11
+
+## 2026-11-11 current skinned-tile refinement setting
+
+`OPT_SKIN_REFINE_LEVEL` is 4 in the current `test.c`. This source state was
+prepared for synchronization to GitHub together with the preceding unified
+configuration and degree-unification commits.
 
 ## 2026-11-07 memory-helper cleanup
 

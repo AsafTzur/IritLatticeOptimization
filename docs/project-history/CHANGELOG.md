@@ -3,6 +3,20 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-11 — Increase skinned-tile refinement level
+
+Purpose: preserve the current tested `test.c` setting before synchronizing the
+latest source to GitHub.
+
+Changes:
+
+- Increased `OPT_SKIN_REFINE_LEVEL` from 2 to 4.
+
+Verification:
+
+- The current `test.c`, including this setting, compiled successfully with the
+  Visual C++ 2022 Release x64 `ClCompile` target during the preceding repair.
+
 ## 2026-11-07 — Simplify configuration cleanup and make field growth atomic
 
 Purpose: remove duplicated ownership cleanup and prevent partially resized
