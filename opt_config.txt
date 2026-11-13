@@ -7,34 +7,35 @@
 # -------------------------------------------------------------
 # RUN DEFINITIONS
 # -------------------------------------------------------------
-macro_shape_file = DefMap.itd
+macro_shape_file = Winglet.itd
 # 1 = ANSYS, 2 = CalculiX
-simulation_type = 2
+simulation_type = 1
 # Lattice Type = Tile type, 0 = 3Dcross, 1=Smooth 3DCross, 2=DiagonalTile
-lattice_type = 1
+lattice_type = 0
 # Skin thickness for lattice type 0: 0 disables skin; maximum is 0.5.
-skin_thickness = 0
-# Supply one U/V/W value per macro body, in ITD order. For example:
+skin_thickness = 0.05
+# Multiple values are still accepted by the parser, for example:
 # lattice_count_u = 2, 3
-# lattice_count_v = 5, 5
+# lattice_count_v = 5, 4
 # lattice_count_w = 20, 10
-# Counts may vary only on the stack axis. If every body has identical counts,
-# body_stack_axis is required; otherwise the differing axis can be inferred.
-lattice_count_u = 2
-lattice_count_v = 5
-lattice_count_w = 20
-# body_stack_axis = w
+# Current single-body execution uses only the first U/V/W set.
+lattice_count_u = 5,5
+lattice_count_v = 4,10
+lattice_count_w = 1,1
 
-# true: approximate/global FFD placement; false: exact/local deformation.
-use_microstructure_ffd = true
+initial_thickness = 0.1
 
-initial_thickness = 0.188
-
-mesh_sample = 6
+mesh_sample = 4
 
 max_iterations = 25
 convergence_iterations = 3
 thickness_change_tolerance = 0.0025
+
+# 1 = run the initial geometry-only target-volume fitting loop.
+# 0 = skip that loop and start directly from initial_thickness.
+# This flag does NOT disable target_volume_fraction for MMA.
+use_target_volume = 0
+use_microstructure_ffd = true
 
 target_volume_fraction = 0.40
 target_volume_fraction_tol = 0.1
@@ -43,7 +44,7 @@ optimization_algorithm = 3
 # -------------------------------------------------------------
 # OPTIMIZATION / MODEL CONFIGURATION
 # -------------------------------------------------------------
-scale = 0.015
+scale = 0.001
 density = 2700
 youngs_modulus = 6.9e10
 poisson_ratio = 0.33

@@ -94,6 +94,16 @@ the repaired path. This is an engineering observation, not yet a general proof;
 future experiments should record geometry, deformation settings, Jacobian
 statistics, runtime, and failure counts.
 
+## Passive-skin optimization ownership
+
+The skin must participate in structural analysis while remaining outside the
+lattice design-variable update. An attempted method that classified a fixed
+prefix of each generated tile's FEM range as lattice and the remainder as skin
+was removed on 2026-11-02 because the export ordering was not established as a
+stable identity contract. This negative result supports using explicit
+geometry-to-element ownership metadata and validating complete, disjoint
+lattice and skin element sets before optimization results are aggregated.
+
 ## Evidence still needed
 
 - Reproducible build command and compiler/linker configuration.

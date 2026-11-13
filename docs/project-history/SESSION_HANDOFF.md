@@ -2,6 +2,35 @@
 
 Last updated: 2026-11-11
 
+## 2026-11-11 geometric-region correction to INP FEM schema
+
+`inp_fem_params.h` now models pre-mesh ITD selections rather than generated
+mesh IDs. Named `INP_FEM_REGION` records use `IritTrivTVBndryType` masks and
+are classified as node, surface, or volume regions. All analysis conditions
+and result requests reference those names for resolution during INP export.
+
+## 2026-11-11 INP FEM attribute schema
+
+`inp_fem_params.h` is a standalone proposal for the advisor's ITD attribute
+feature. Its versioned `INP_FEM_PARAMS` root describes node, element, and
+surface sets; structural or steady-state thermal analysis data; and result
+requests. It has not been connected to the optimizer or IRIT serializer.
+
+## 2026-11-11 goto removal
+
+All 45 `goto` statements were removed from `test.c` and
+`optimization_config_parser.c`. Error paths now clean their owned resources and
+return from the current function; the callable `IritOptRun()` workflow is not
+terminated with process-level `exit()`. Release x64 rebuilds succeeded with
+NLopt disabled and enabled, with only the existing `LNK4098` warning.
+
+## 2026-11-11 optional NLopt build
+
+NLopt/MMA is guarded by `HAVE_NLOPT`. The local Visual Studio test project has
+a `UseNLopt` property that defaults to `false`; pass `/p:UseNLopt=true` to
+compile and link MMA. Release x64 rebuilds succeeded in both modes, with only
+the existing `LNK4098` warning.
+
 ## 2026-11-11 configuration parser extraction
 
 The text configuration implementation now lives in

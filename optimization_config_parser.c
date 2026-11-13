@@ -165,37 +165,44 @@ static int ConfigParseCountList(const char *Text, int **Values, int *Count)
             break;
         errno = 0;
         Parsed = strtol(Cursor, &End, 10);
-        if (End == Cursor || errno == ERANGE || Parsed <= 0 || Parsed > INT_MAX)
-            goto Error;
+        if (End == Cursor || errno == ERANGE || Parsed <= 0 || Parsed > INT_MAX) {
+            if (Result != NULL)
+                IritFree(Result);
+            return FALSE;
+        }
         Cursor = End;
         if (*Cursor != '\0' && !isspace((unsigned char) *Cursor) &&
             *Cursor != ',' && *Cursor != ';' && *Cursor != 'x' &&
-            *Cursor != 'X')
-            goto Error;
+            *Cursor != 'X') {
+            if (Result != NULL)
+                IritFree(Result);
+            return FALSE;
+        }
         if (Length == Capacity) {
             int NewCapacity = Capacity == 0 ? 4 : Capacity * 2;
             int *NewResult = (int *) ConfigReallocCopy(
                 Result, (size_t) Capacity * sizeof(int),
                 (size_t) NewCapacity * sizeof(int));
-            if (NewResult == NULL)
-                goto Error;
+            if (NewResult == NULL) {
+                if (Result != NULL)
+                    IritFree(Result);
+                return FALSE;
+            }
             Result = NewResult;
             Capacity = NewCapacity;
         }
         Result[Length++] = (int) Parsed;
     }
-    if (Length == 0)
-        goto Error;
+    if (Length == 0) {
+        if (Result != NULL)
+            IritFree(Result);
+        return FALSE;
+    }
     if (*Values != NULL)
         IritFree(*Values);
     *Values = Result;
     *Count = Length;
     return TRUE;
-
-Error:
-    if (Result != NULL)
-        IritFree(Result);
-    return FALSE;
 }
 
 void OptimizationConfigInit(OptConfigStruct *Config)

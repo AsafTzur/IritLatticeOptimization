@@ -28,7 +28,9 @@
 #include <limits.h>
 #include <errno.h>
 #include <windows.h>
-#include <nlopt.h>
+#ifdef HAVE_NLOPT
+#   include <nlopt.h>
+#endif
 
 #ifdef _WIN32
 #   include <direct.h>
@@ -295,6 +297,7 @@ static CagdRType DesignUpdateSEDRatio(OptWorkflowStateStruct *Opt,
                                       int Count,
                                       const CagdRType *Prev,
                                       int Iter);
+#ifdef HAVE_NLOPT
 static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
                                  int Count,
                                  const CagdRType *Prev,
@@ -307,6 +310,7 @@ static double MMAVolumeConstraint(unsigned n,
                                   const double *x,
                                   double *Grad,
                                   void *Data);
+#endif
 static CagdRType DesignUpdateOC(OptWorkflowStateStruct *Opt,
                                 int Count,
                                 const CagdRType *Prev);
@@ -783,7 +787,6 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
 
     int I;
     int N;
-    int Ok = FALSE;
 
     if (Opt == NULL)
         return FALSE;
@@ -856,7 +859,7 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
             "ANSYS INP: cannot open input file: %s\n",
             Opt->Config.InpFile);
-        goto Cleanup;
+        return FALSE;
     }
 
     Dst = fopen(TempInp, "w");
@@ -864,7 +867,9 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
             "ANSYS INP: cannot create temporary file: %s\n",
             TempInp);
-        goto Cleanup;
+        fclose(Src);
+        remove(TempInp);
+        return FALSE;
     }
 
     /***********************************************************************
@@ -1037,7 +1042,8 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
             "ANSYS INP: failed to replace original INP.\n");
 
-        goto Cleanup;
+        remove(TempInp);
+        return FALSE;
     }
 
 #else
@@ -1048,7 +1054,8 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
             "ANSYS INP: failed to replace original INP.\n");
 
-        goto Cleanup;
+        remove(TempInp);
+        return FALSE;
     }
 
 #endif
@@ -1060,20 +1067,7 @@ static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
         LoadedCount,
         (double)TotalLoadY);
 
-    Ok = TRUE;
-
-Cleanup:
-
-    if (Src != NULL)
-        fclose(Src);
-
-    if (Dst != NULL)
-        fclose(Dst);
-
-    if (!Ok)
-        remove(TempInp);
-
-    return Ok;
+    return TRUE;
 }
 
 /***************************************************************************
@@ -1105,6 +1099,19 @@ Cleanup:
 * RETURN VALUE:
 *   TRUE on success, FALSE on failure.
 ***************************************************************************/
+static int AbortTemporaryInp(FILE *Src, FILE *Dst, void *Allocation,
+                             const char *TempInp)
+{
+    if (Src != NULL)
+        fclose(Src);
+    if (Dst != NULL)
+        fclose(Dst);
+    if (Allocation != NULL)
+        IritFree(Allocation);
+    remove(TempInp);
+    return FALSE;
+}
+
 static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
 {
     const CagdRType YoungsModulusPa = 1.8e9;
@@ -1133,7 +1140,6 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
     int InSupportSurface = FALSE;
     int HasSupportSurface = FALSE;
     int HasPressureSurface = FALSE;
-    int Ok = FALSE;
     int I, J, K;
 
     if (Opt == NULL || OptIsBlank(Opt->Config.InpFile))
@@ -1167,7 +1173,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
                 "ANSYS winglet INP: cannot open input file: %s\n",
                 Opt->Config.InpFile);
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 
     Dst = fopen(TempInp, "w");
@@ -1175,7 +1181,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
         fprintf(stderr,
                 "ANSYS winglet INP: cannot create temporary file: %s\n",
                 TempInp);
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 
     /* Copy the IRIT file while converting its UVW-generated SUPPORT surface
@@ -1220,7 +1226,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                 fprintf(stderr,
                         "ANSYS winglet INP: invalid SUPPORT surface row: %s\n",
                         P);
-                goto Cleanup;
+                return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
             }
 
             for (I = 0; I < Opt->FEM.ElementCount; ++I) {
@@ -1234,7 +1240,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                         "ANSYS winglet INP: SUPPORT references unknown/non-C3D8 "
                         "element %d.\n",
                         ElementId);
-                goto Cleanup;
+                return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
             }
 
             ++SupportFaceCount;
@@ -1253,7 +1259,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                     if (SupportNodeCount >= Opt->FEM.NodeCount) {
                         fprintf(stderr,
                                 "ANSYS winglet INP: SUPPORT node list overflow.\n");
-                        goto Cleanup;
+                        return AbortTemporaryInp(Src, Dst, SupportNodeIds,
+                                                 TempInp);
                     }
                     SupportNodeIds[SupportNodeCount++] = NodeId;
                 }
@@ -1271,14 +1278,14 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                 "ANSYS winglet INP: named element surface SUPPORT was not "
                 "found or contained no C3D8 faces.\n"
                 "Check DefineINPFaceSelections() and the exported INP.\n");
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 
     if (!HasPressureSurface) {
         fprintf(stderr,
                 "ANSYS winglet INP: named surface PRESSURE was not found.\n"
                 "Check DefineINPFaceSelections() and the exported INP.\n");
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 
     fprintf(Dst, "\n** BEGIN ADDED ANSYS WINGLET ANALYSIS DEFINITION\n");
@@ -1354,13 +1361,13 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                      MOVEFILE_COPY_ALLOWED)) {
         fprintf(stderr,
                 "ANSYS winglet INP: failed to replace original INP.\n");
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 #else
     if (rename(TempInp, Opt->Config.InpFile) != 0) {
         fprintf(stderr,
                 "ANSYS winglet INP: failed to replace original INP.\n");
-        goto Cleanup;
+        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 #endif
 
@@ -1375,19 +1382,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
             (double) (YoungsModulusPa * 1.0e-9),
             (double) (PressurePa * 1.0e-3));
 
-    Ok = TRUE;
-
-Cleanup:
-    if (Src != NULL)
-        fclose(Src);
-    if (Dst != NULL)
-        fclose(Dst);
-    if (SupportNodeIds != NULL)
-        IritFree(SupportNodeIds);
-    if (!Ok)
-        remove(TempInp);
-
-    return Ok;
+    IritFree(SupportNodeIds);
+    return TRUE;
 }
 
 /***************************************************************************
@@ -1428,6 +1424,34 @@ static int RunAnsysBatch(OptWorkflowStateStruct *Opt)
 * RETURN VALUE:                                                            *
 *   int: TRUE if the child process exits successfully, FALSE otherwise.    *
 ***************************************************************************/
+static int FinishCalculixBatch(FILE *Src, FILE *Dst, FILE *Dat, FILE *Sed,
+                               FILE *VolumeOut, FILE *DesignOut,
+                               CagdRType *ElementEnergy,
+                               CagdRType *ElementVolume,
+                               CagdRType *NodeDisp,
+                               int Result)
+{
+    if (Src != NULL)
+        fclose(Src);
+    if (Dst != NULL)
+        fclose(Dst);
+    if (Dat != NULL)
+        fclose(Dat);
+    if (Sed != NULL)
+        fclose(Sed);
+    if (VolumeOut != NULL)
+        fclose(VolumeOut);
+    if (DesignOut != NULL)
+        fclose(DesignOut);
+    if (ElementEnergy != NULL)
+        IritFree(ElementEnergy);
+    if (ElementVolume != NULL)
+        IritFree(ElementVolume);
+    if (NodeDisp != NULL)
+        IritFree(NodeDisp);
+    return Result;
+}
+
 static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
 {
     enum {
@@ -1478,7 +1502,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     if (!Opt -> Lattice.FEMTopologyBound ||
         Opt -> FEM.NodeCount == 0 || Opt -> FEM.ElementCount == 0) {
         fprintf(stderr, "CalculiX: persistent FEM topology is unavailable.\n");
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
     for (I = 0; I < Opt -> FEM.NodeCount; ++I) {
@@ -1503,7 +1529,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
         fprintf(stderr,
                 "CalculiX: failed to select BC nodes (fixed=%d, loaded=%d).\n",
                 FixedCount, LoadedCount);
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
     /* Rewrite node coordinates with bounded precision.  IRIT's full decimal
@@ -1513,7 +1541,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     Src = fopen(Opt -> Config.InpFile, "r");
     Dst = fopen(TempInp, "w");
     if (Src == NULL || Dst == NULL)
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
 
     while (fgets(Line, sizeof(Line), Src) != NULL) {
         char Copy[OPT_MAX_LINE] = { 0 };
@@ -1614,11 +1644,15 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     if (!MoveFileExA(TempInp, Opt -> Config.InpFile,
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
         fprintf(stderr, "CalculiX: cannot replace completed INP file.\n");
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 #else
     if (rename(TempInp, Opt -> Config.InpFile) != 0)
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
 #endif
 
     /* CALCULIX_CCX permits another installation without changing the code. */
@@ -1628,7 +1662,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
              "C:\\irit\\CalculiX-2.23.0-win-x64\\bin\\ccx_MT.exe");
     if (!OptFileExists(CcxExe)) {
         fprintf(stderr, "CalculiX executable not found: %s\n", CcxExe);
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
 #ifdef _WIN32
@@ -1679,7 +1715,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
         fprintf(stderr,
                 "CalculiX solve failed for job %s; inspect %s\n",
                 JobName, LogFile);
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
     snprintf(DatFile, sizeof(DatFile), "%s%c%s.dat",
@@ -1687,7 +1725,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     Dat = fopen(DatFile, "r");
     if (Dat == NULL) {
         fprintf(stderr, "CalculiX result file was not created: %s\n", DatFile);
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
     ElementEnergy = (CagdRType *) OptAllocZero((size_t) ElementMaxId + 1u,
@@ -1697,7 +1737,9 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
     NodeDisp = (CagdRType *) OptAllocZero((size_t) NodeMaxId + 1u,
                                           sizeof(CagdRType));
     if (ElementEnergy == NULL || ElementVolume == NULL || NodeDisp == NULL)
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
 
     /* The .dat headings make a much safer interface than fixed-column FRD.
      * ELSE and EVOL are whole-element values; no Gauss-point approximation
@@ -1758,21 +1800,27 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
                 DispCount, Opt -> FEM.NodeCount,
                 EnergyCount, Opt -> FEM.ElementCount,
                 VolumeCount, Opt -> FEM.ElementCount);
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
     }
 
     Sed = fopen(Opt -> Config.SedFile, "w");
     VolumeOut = fopen(Opt -> Config.VolumeFile, "w");
     DesignOut = fopen(Opt -> Config.DesignParametersFile, "w");
     if (Sed == NULL || VolumeOut == NULL || DesignOut == NULL)
-        goto Cleanup;
+        return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                                   ElementEnergy, ElementVolume, NodeDisp,
+                                   FALSE);
 
     fprintf(Sed, "Element Number\tENERGYPOTENTIAL/VOLUME (mJ/mm^3)\n");
     fprintf(VolumeOut, "Element Number\tVOLUME (mm^3)\n");
     for (I = 0; I < Opt -> FEM.ElementCount; ++I) {
         int Id = Opt -> FEM.Elements[I].Id;
         if (ElementVolume[Id] <= 0.0)
-            goto Cleanup;
+            return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut,
+                                       DesignOut, ElementEnergy, ElementVolume,
+                                       NodeDisp, FALSE);
         fprintf(Sed, "%d\t%.17g\n", Id,
                 (double) (ElementEnergy[Id] / ElementVolume[Id] * PaToMPa));
         fprintf(VolumeOut, "%d\t%.17g\n", Id,
@@ -1799,27 +1847,8 @@ static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
             Opt -> FEM.ElementCount, (double) (MaxDeflectionM * MToMm),
             (double) (TotalVolumeM3 * Opt -> Config.Density));
     Ok = TRUE;
-
-Cleanup:
-    if (Src != NULL)
-        fclose(Src);
-    if (Dst != NULL)
-        fclose(Dst);
-    if (Dat != NULL)
-        fclose(Dat);
-    if (Sed != NULL)
-        fclose(Sed);
-    if (VolumeOut != NULL)
-        fclose(VolumeOut);
-    if (DesignOut != NULL)
-        fclose(DesignOut);
-    if (ElementEnergy != NULL)
-        IritFree(ElementEnergy);
-    if (ElementVolume != NULL)
-        IritFree(ElementVolume);
-    if (NodeDisp != NULL)
-        IritFree(NodeDisp);
-    return Ok;
+    return FinishCalculixBatch(Src, Dst, Dat, Sed, VolumeOut, DesignOut,
+                               ElementEnergy, ElementVolume, NodeDisp, Ok);
 }
 
 /***************************************************************************
@@ -1885,12 +1914,20 @@ static int ProcessIterationData(OptWorkflowStateStruct *Opt, int Iter)
                                      Iter);
             break;
         case 1:
+#ifdef HAVE_NLOPT
             Opt -> LastThicknessChange =
                 DesignUpdateMMA(Opt,
                                 TileCount * Opt -> LMin,
                                 PrevThickness,
                                 Iter);
             break;
+#else
+            fprintf(stderr,
+                    "optimization_algorithm = 1 requires an NLopt-enabled "
+                    "build.\n");
+            IritFree(PrevThickness);
+            return -1;
+#endif
         case 2:
             Opt -> LastThicknessChange =
                 DesignUpdateOC(Opt,
@@ -2222,6 +2259,7 @@ static CagdRType DesignUpdateSEDRatio(OptWorkflowStateStruct *Opt,
 {
     int IndCounter = 0;
     int SedrCounter = 0;
+    int ReachedCountLimit = FALSE;
     int I, L;
     CagdRType Avg = 0.0;
     CagdRType Var = 0.0;
@@ -2264,7 +2302,8 @@ static CagdRType DesignUpdateSEDRatio(OptWorkflowStateStruct *Opt,
                     "Warning: DesignUpdateSEDRatio reached Count limit early. "
                     "Count = %d\n",
                     Count);
-                goto ComputeSedStats;
+                ReachedCountLimit = TRUE;
+                break;
             }
 
             TOld = Prev[IndCounter];
@@ -2317,10 +2356,9 @@ static CagdRType DesignUpdateSEDRatio(OptWorkflowStateStruct *Opt,
 
             ++IndCounter;
         }
+        if (ReachedCountLimit)
+            break;
     }
-
-
-ComputeSedStats:
 
     if (IndCounter != Count) {
         fprintf(stderr,
@@ -2371,6 +2409,7 @@ ComputeSedStats:
 * RETURN VALUE:                                                            *
 *   CagdRType: Maximum absolute thickness change in this iteration.        *
 ***************************************************************************/
+#ifdef HAVE_NLOPT
 static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
                                  int Count,
                                  const CagdRType *Prev,
@@ -2600,6 +2639,8 @@ static double MMAVolumeConstraint(unsigned n,
 
     return Value;
 }
+
+#endif /* HAVE_NLOPT */
 
 /****************************************************************************
 * DESCRIPTION:                                                              *
@@ -3822,6 +3863,23 @@ static IritPrsrObjectStruct *PreProcessTileFFD(
 *   int: TRUE if the requested stage completed successfully, FALSE          *
 *        otherwise.                                                         *
 ****************************************************************************/
+static int FinishMicroStructures(IritMvarMVStruct *MV,
+                                 IritPrsrObjectStruct *BodyMS,
+                                 IritPrsrObjectStruct *Scaled,
+                                 IritPrsrObjectStruct *MS,
+                                 int Result)
+{
+    if (MV != NULL)
+        IritMvarMVFree(MV);
+    if (BodyMS != NULL)
+        IritPrsrFreeObject(BodyMS);
+    if (Scaled != NULL)
+        IritPrsrFreeObject(Scaled);
+    if (MS != NULL)
+        IritPrsrFreeObject(MS);
+    return Result;
+}
+
 static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
 {
     const int UseFFDTileAggregation = 0;
@@ -3868,7 +3926,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         int I;
 
         if (BodyMap == NULL)
-            goto Cleanup;
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
         for (D = 0; D < 3; ++D)
             Counts[D] = Opt -> Config.LatticeCountLists[D][B];
         for (I = 0; I < B; ++I)
@@ -3894,7 +3952,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
             IRIT_ZAP_MEM(&Param, sizeof(Param));
             MV = IritMvarCnvrtTVToMV(BodyMap);
             if (MV == NULL)
-                goto Cleanup;
+                return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
             Param.TilingType = IRIT_USER_MICRO_TILE_REGULAR;
             Param.DeformMV = MV;
@@ -3936,7 +3994,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         }
 
         if (BodyMS == NULL)
-            goto Cleanup;
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
         IritPrsrListObjectAppend(MS, BodyMS);
         BodyMS = NULL; /* MS owns the appended body object. */
     }
@@ -3946,7 +4004,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         IritMiscMatGenMatUnifScale(Opt -> Config.Scale, Mat);
         Scaled = IritGeomTransformObject(MS, Mat);
         if (Scaled == NULL)
-            goto Cleanup;
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
         IRIT_ZAP_MEM(&Save, sizeof(Save));
         for (D = 0; D < 3; ++D)
@@ -3960,30 +4018,19 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         Save.Messages = TRUE;
 
         if (!IritPrsrInpSaveFile(Scaled, Opt -> Config.InpFile, &Save))
-            goto Cleanup;
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
         Handler = IritPrsrOpenDataFile(Opt -> Config.ItdOutputFile,
                                        FALSE,
                                        1);
         if (Handler < 0)
-            goto Cleanup;
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
         IritPrsrPutObjectToHandler(Handler, MS);
         IritPrsrCloseStream(Handler, TRUE);
     }
 
     Ok = TRUE;
-
-Cleanup:
-    if (MV != NULL)
-        IritMvarMVFree(MV);
-    if (BodyMS != NULL)
-        IritPrsrFreeObject(BodyMS);
-    if (Scaled != NULL)
-        IritPrsrFreeObject(Scaled);
-    if (MS != NULL)
-        IritPrsrFreeObject(MS);
-
-    return Ok;
+    return FinishMicroStructures(MV, BodyMS, Scaled, MS, Ok);
 }
 
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile,
@@ -4325,8 +4372,11 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                 Node.X = (CagdRType) atof(Parts[1]);
                 Node.Y = (CagdRType) atof(Parts[2]);
                 Node.Z = (CagdRType) atof(Parts[3]);
-                if (Node.Id <= 0 || !FEMNodePush(&Opt -> FEM, &Node))
-                    goto Fail;
+                if (Node.Id <= 0 || !FEMNodePush(&Opt -> FEM, &Node)) {
+                    fclose(F);
+                    FEMModelReset(&Opt -> FEM);
+                    return FALSE;
+                }
             }
         }
         else if (CurrentSection == SEC_ELEMENT) {
@@ -4342,8 +4392,11 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
             while ((Tok = strtok(NULL, ",")) != NULL &&
                    Elem.NodeCount < OPT_C3D8_NODE_COUNT) {
                 int NodeId = atoi(OptTrim(Tok));
-                if (NodeId <= 0)
-                    goto Fail;
+                if (NodeId <= 0) {
+                    fclose(F);
+                    FEMModelReset(&Opt -> FEM);
+                    return FALSE;
+                }
                 Elem.NodeIds[Elem.NodeCount++] = NodeId;
             }
 
@@ -4351,20 +4404,20 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                 fprintf(stderr,
                         "Invalid C3D8 element %d in %s: %d node IDs, expected %d.\n",
                         Elem.Id, INPPath, Elem.NodeCount, OPT_C3D8_NODE_COUNT);
-                goto Fail;
+                fclose(F);
+                FEMModelReset(&Opt -> FEM);
+                return FALSE;
             }
-            if (!FEMElementPush(&Opt -> FEM, &Elem))
-                goto Fail;
+            if (!FEMElementPush(&Opt -> FEM, &Elem)) {
+                fclose(F);
+                FEMModelReset(&Opt -> FEM);
+                return FALSE;
+            }
         }
     }
 
     fclose(F);
     return Opt -> FEM.NodeCount > 0 && Opt -> FEM.ElementCount > 0;
-
-Fail:
-    fclose(F);
-    FEMModelReset(&Opt -> FEM);
-    return FALSE;
 }
 
 /***************************************************************************
@@ -4442,31 +4495,41 @@ static CagdRType *ReadTileData(const OptWorkflowStateStruct *Opt,
     double Thickness, Sed;
     if (!F)
         return NULL;
-    if (!OptReadCsvHeader(F, Opt))
-        goto Done;
+    if (!OptReadCsvHeader(F, Opt)) {
+        fclose(F);
+        return NULL;
+    }
     Prev = (CagdRType *) OptAllocZero(ExpectedCount, sizeof(CagdRType));
-    if (!Prev)
-        goto Done;
+    if (!Prev) {
+        fclose(F);
+        return NULL;
+    }
     while (fgets(Line, sizeof(Line), F)) {
         if (OptIsBlank(Line))
             continue;
         if (N >= ExpectedCount ||
             sscanf(Line, "%d,%lf,%lf %c", &Id, &Thickness, &Sed, &Extra) != 3 ||
             Id != N + 1 || !isfinite(Thickness) || Thickness <= 0.0 ||
-            !isfinite(Sed)) goto Invalid;
+            !isfinite(Sed)) {
+            fprintf(stderr,
+                    "Invalid/missing/extra CSV design row at index %d in %s\n",
+                    N,
+                    FileName);
+            IritFree(Prev);
+            fclose(F);
+            return NULL;
+        }
         Prev[N++] = Thickness;
     }
-    if (N != ExpectedCount)
-        goto Invalid;
-    goto Done;
-Invalid:
-    fprintf(stderr,
-            "Invalid/missing/extra CSV design row at index %d in %s\n",
-            N,
-            FileName);
-    IritFree(Prev);
-    Prev = NULL;
-Done:
+    if (N != ExpectedCount) {
+        fprintf(stderr,
+                "Invalid/missing/extra CSV design row at index %d in %s\n",
+                N,
+                FileName);
+        IritFree(Prev);
+        fclose(F);
+        return NULL;
+    }
     fclose(F);
     return Prev;
 }

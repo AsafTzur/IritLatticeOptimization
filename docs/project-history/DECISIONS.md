@@ -1,5 +1,17 @@
 # Design Decisions
 
+## D-013 — Treat NLopt MMA as an optional build feature
+
+Date: 2026-11-11
+
+Decision: compile the MMA implementation only when `HAVE_NLOPT` is defined.
+The Visual Studio test project controls this through `UseNLopt`, which defaults
+to `false` for portability.
+
+Reason: geometry generation and optimization algorithms 0, 2, and 3 do not
+depend on NLopt and should remain buildable without its headers and library.
+Algorithm 1 remains available in explicitly NLopt-enabled builds.
+
 ## D-012 — Keep IritOptRun independent of the text parser
 
 Date: 2026-11-11
@@ -29,6 +41,25 @@ and made scripted invocation state-dependent.
 Ownership: callers own their configuration and count arrays. The workflow
 deep-copies the complete structure and its dynamic count arrays, so runtime
 updates and cleanup do not alter caller-owned input.
+
+## D-010 — Reject export-order inference for passive skin elements
+
+Date: 2026-11-02
+
+Decision: Remove the attempted skin-exclusion logic that parsed generated
+`SET_n` ranges and treated the first fixed number of elements in every tile
+range as lattice elements, with the remainder treated as passive skin.
+
+Reason: the approach depends on an unverified ordering convention and does not
+carry explicit geometry-to-FEM identity for skin versus optimizable lattice
+members. A wrong classification can feed skin SED, stress, or volume into a
+lattice design variable without an obvious failure. Until a replacement uses
+explicit, validated ownership metadata, extra skin elements must trigger the
+strict mesh/order mismatch.
+
+Scope: skin remains part of geometry, the INP model, and structural analysis.
+This decision concerns only classification for optimization and does not
+define the replacement method.
 
 ## D-001 — Store durable project records beside the source
 

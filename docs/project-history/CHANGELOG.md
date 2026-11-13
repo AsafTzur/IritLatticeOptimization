@@ -3,6 +3,94 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-11 — Align INP FEM schema with pre-mesh IRIT selections
+
+Purpose: represent FEM conditions as ITD-resident geometric definitions rather
+than mesh IDs that do not exist until INP export.
+
+Changes:
+
+- Replaced explicit node, element, and element-face arrays in
+  `inp_fem_params.h` with named `INP_FEM_REGION` records.
+- Regions select the owning or named child object and use the existing
+  `IritTrivTVBndryType` masks, including combined selections such as U-min plus
+  W-max.
+- Added node-set, surface-set, and volume-set region kinds for conversion by
+  the INP exporter after meshing.
+- Changed every support, load, thermal condition, and result request to refer
+  to a named region.
+
+Verification:
+
+- Confirmed the schema uses IRIT's public trivariate-boundary type and contains
+  no pre-generated node or element IDs.
+- The proposal remains intentionally separate from the current optimizer and
+  has not been integrated into IRIT's ITD serializer or INP exporter.
+
+## 2026-11-11 — Define portable INP FEM analysis-attribute schema
+
+Purpose: provide the IRIT ITD-attribute implementation with a complete,
+standalone data contract for producing solver-ready ANSYS INP analysis data.
+
+Changes:
+
+- Added `inp_fem_params.h` with the versioned `INP_FEM_PARAMS` root structure.
+- Defined structural material, support, load, set, and requested-result records.
+- Defined steady-state thermal material, prescribed temperature, heat load,
+  convection, radiation, set, and requested-result records.
+- Used explicit SI field names and count-plus-array representation so the data
+  can be serialized without depending on the current optimizer configuration.
+
+Verification:
+
+- Header structure and include guards were inspected; it is intentionally not
+  integrated into or compiled by the current optimizer yet.
+
+## 2026-11-11 — Remove goto-based cleanup paths
+
+Purpose: satisfy the code-review requirement to avoid `goto` while preserving
+the callable optimization entry point and all resource cleanup behavior.
+
+Changes:
+
+- Removed all 45 `goto` statements from `test.c` and
+  `optimization_config_parser.c`.
+- Replaced simple error jumps with direct cleanup and return paths.
+- Added shared cleanup helpers for temporary INP rewriting, CalculiX resources,
+  and generated IRIT microstructure objects.
+- Replaced the SED-update loop jump with an explicit loop-termination flag.
+- Kept failures local to the current function; no process-level `exit()` calls
+  were introduced.
+
+Verification:
+
+- Source search found no remaining `goto` statements or former cleanup labels.
+- `git diff --check -- test.c optimization_config_parser.c` reported no
+  whitespace errors.
+- Release x64 rebuilt and linked successfully with both `UseNLopt=false` and
+  `UseNLopt=true`; both builds emitted only the existing `LNK4098` warning.
+
+## 2026-11-11 — Make NLopt an optional build dependency
+
+Purpose: allow geometry generation and non-MMA optimization algorithms to
+build on machines without NLopt installed.
+
+Changes:
+
+- Guarded the NLopt header, MMA declarations, MMA dispatch, and MMA function
+  definitions with `HAVE_NLOPT`.
+- Added a clear runtime error when `optimization_algorithm = 1` is selected in
+  a build that does not include NLopt.
+- Added the `UseNLopt` Visual Studio project property. It defaults to `false`;
+  setting `/p:UseNLopt=true` defines `HAVE_NLOPT` and adds the existing NLopt
+  include path, library path, and `nlopt.lib` dependency.
+
+Verification:
+
+- Release x64 rebuilt and linked successfully with `UseNLopt=false`.
+- Release x64 rebuilt and linked successfully with `UseNLopt=true`.
+- Both builds emitted only the existing `LNK4098` runtime-library warning.
+
 ## 2026-11-11 — Extract text configuration parsing from test.c
 
 Purpose: isolate the temporary text-file input mechanism from the optimization
