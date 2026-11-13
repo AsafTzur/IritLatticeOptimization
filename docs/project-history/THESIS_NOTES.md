@@ -104,6 +104,15 @@ stable identity contract. This negative result supports using explicit
 geometry-to-element ownership metadata and validating complete, disjoint
 lattice and skin element sets before optimization results are aggregated.
 
+Implementation update, 2026-11-13: the optimizer now classifies full-face skin
+trivariates in the undeformed unit tile, carries explicit owner metadata through
+deformation, and reconstructs the final export-order ownership table before INP
+binding. Skin elements remain in the connected analysis model but are excluded
+from subtile SED, volume, compliance, sensitivity, and thickness updates. Fixed
+skin volume is separated from evolving lattice volume for the MMA target. This
+method is compile-verified but still needs a complete skinned solver run and
+evidence that the intended skin/lattice interface transfers load correctly.
+
 ## Evidence still needed
 
 - Reproducible build command and compiler/linker configuration.

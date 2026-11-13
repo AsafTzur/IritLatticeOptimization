@@ -1,5 +1,23 @@
 # Design Decisions
 
+## D-014 — Carry explicit passive-skin ownership through one connected INP
+
+Date: 2026-11-13
+
+Decision: keep lattice and skin geometry in the same connected INP model, tag
+each generated trivariate as lattice or passive skin before deformation, and
+bind only explicitly lattice-owned FEM patches to optimization subtiles.
+
+Reason: a separate independently meshed skin INP would still require node
+merging or solver coupling, while splitting by element order would repeat the
+unverified assumption rejected in D-010. Geometry-carried ownership preserves
+one structural model and allows the skin to contribute stiffness without
+receiving design updates.
+
+Validation rule: every exported patch must have exactly one recognized owner;
+all expected lattice subtiles must bind once; all remaining recognized patches
+must be passive skin; and the mapping must remain identical across iterations.
+
 ## D-013 — Treat NLopt MMA as an optional build feature
 
 Date: 2026-11-11

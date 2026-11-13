@@ -1,6 +1,23 @@
 # Session Handoff
 
-Last updated: 2026-11-11
+Last updated: 2026-11-13
+
+## 2026-11-13 passive-skin ownership repair
+
+Work is on branch `feature/passive-skin-element-ownership`. `test.c` now tags
+each synthesized tile trivariate with explicit lattice/passive-skin ownership,
+tile index, and subtile index before deformation. The final scaled geometry is
+traversed in INP export order to build a patch-owner table. FEM binding consumes
+all patches, binds only lattice patches to subtiles, and marks skin elements as
+passive so they remain in the structural solve without contributing to design
+updates. Later iterations verify that patch ownership has not changed.
+
+Fixed skin volume is computed separately from lattice volume and subtracted
+from MMA's total-volume target. A direct Visual C++ 2022 x64 `/W4` compile of
+`test.c` and `optimization_config_parser.c` succeeded with existing warnings.
+The tracked `test.vcxproj` could not start because its imported
+`..\IRIT_SM\GlobalRules.props` is missing at this repository location. No
+complete skinned geometry/solver/optimization run has yet been performed.
 
 ## 2026-11-11 geometric-region correction to INP FEM schema
 

@@ -42,6 +42,12 @@ without checking their timestamps and contents.
     global grid, including interfaces on the selected U, V, or W stack axis.
 12. Record results and repeat until convergence or the iteration limit.
 
+For skinned cross tiles, generated trivariates carry explicit lattice or
+passive-skin ownership. Both groups remain in the same INP model, but only
+lattice-owned elements bind to subtiles and participate in design updates.
+Passive-skin patch ownership is validated across iterations and its fixed
+volume is separated from the evolving lattice-volume constraint.
+
 ## Terminology
 
 ### Body

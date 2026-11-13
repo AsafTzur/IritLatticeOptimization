@@ -3,6 +3,37 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-13 — Separate passive skin from optimizable lattice ownership
+
+Purpose: keep full-face skin in the structural model while preventing its
+elements, volume, and solver results from entering lattice design updates.
+
+Changes:
+
+- Added explicit lattice/passive-skin ownership metadata to synthesized tile
+  trivariates before deformation.
+- Identified full-face skin trivariates geometrically in the undeformed unit
+  tile, then carried tile and subtile identity through the generated geometry.
+- Rebuilt an export-order patch-owner table from the final scaled geometry and
+  changed FEM binding to consume all patches while binding only lattice patches
+  to persistent subtiles.
+- Marked passive-skin FEM elements explicitly and excluded them from subtile
+  SED, volume, compliance, sensitivity, and thickness updates.
+- Added cross-iteration ownership validation so changed patch counts or
+  lattice/skin ordering stop the workflow.
+- Separated fixed skin volume from evolving lattice volume and subtracted the
+  fixed contribution from MMA's total-volume target.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` and `optimization_config_parser.c` directly
+  in x64 C mode with `/W4`; only existing external-header and CRT warnings were
+  emitted.
+- `git diff --check` reported no whitespace errors.
+- The tracked `test.vcxproj` could not start because its imported
+  `..\IRIT_SM\GlobalRules.props` file is absent at this repository location.
+- No complete skinned optimization or solver run was performed.
+
 ## 2026-11-11 — Align INP FEM schema with pre-mesh IRIT selections
 
 Purpose: represent FEM conditions as ITD-resident geometric definitions rather

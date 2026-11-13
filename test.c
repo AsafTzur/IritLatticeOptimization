@@ -93,6 +93,12 @@
 
 #define OPT_C3D8_NODE_COUNT 8
 
+typedef enum OptElementOwnerType {
+    OPT_ELEMENT_OWNER_UNKNOWN = 0,
+    OPT_ELEMENT_OWNER_LATTICE = 1,
+    OPT_ELEMENT_OWNER_PASSIVE_SKIN = 2
+} OptElementOwnerType;
+
 typedef struct OptNodeStruct {
     int Id;
     CagdRType X, Y, Z;
@@ -102,12 +108,21 @@ typedef struct OptElementStruct {
     int Id;
     int NodeIds[OPT_C3D8_NODE_COUNT];
     int NodeCount;
+    OptElementOwnerType OwnerType;
+    int OwnerTileIndex;
+    int OwnerSubTileIndex;
 
     CagdRType SED;
     CagdRType Volume;
     CagdRType StrainEnergy;
     CagdRType ComplianceContribution;
 } OptElementStruct;
+
+typedef struct OptMeshPatchOwnerStruct {
+    OptElementOwnerType OwnerType;
+    int TileIndex;
+    int SubTileIndex;
+} OptMeshPatchOwnerStruct;
 
 typedef struct OptSubTileStruct {
     /* Permanent FE ownership, established once from the first INP. */
@@ -236,6 +251,7 @@ struct OptWorkflowStateStruct {
     CagdRType SedR;
     CagdRType DefMapVol;
     CagdRType LatticeVol;
+    CagdRType PassiveSkinVol;
     CagdRType LastThicknessChange;
     int ConsecutiveSmallChanges;
     int CurrentIteration;
@@ -258,6 +274,9 @@ struct OptWorkflowStateStruct {
     int StackAxis;
     CagdRType *Results;              /* Flat array [Iter][3]. */
     OptLegacyStateStruct Legacy;     /* Per-run IRIT CSV/callback state. */
+    OptMeshPatchOwnerStruct *MeshPatchOwners;
+    int MeshPatchOwnerCount;
+    int PassiveSkinElementCount;
 };
 
 
@@ -334,6 +353,8 @@ static void ApplyNeighbourMatching(OptWorkflowStateStruct *Opt);
 static CagdRType OptDesignMoveFraction(int Iter);
 static int LatticeByVolumeFraction(OptWorkflowStateStruct *Opt);
 static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj);
+static CagdRType ComputeOwnedObjVol(IritPrsrObjectStruct *PObj,
+                                    OptElementOwnerType OwnerType);
 static void CreateLegacyDataFile(OptWorkflowStateStruct *Opt);
 
 /* Geometry generation. */
@@ -361,6 +382,12 @@ static IritPrsrObjectStruct *PreProcessTileFFD(
 static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Tile);
 static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode);
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile, int RefinementLevel);
+static int TagTileMeshOwnership(IritPrsrObjectStruct *Tile,
+                                int TileIndex,
+                                int ExpectedSubTiles,
+                                CagdRType SkinThickness);
+static int BuildMeshPatchOwners(OptWorkflowStateStruct *Opt,
+                                const IritPrsrObjectStruct *Geometry);
 
 /* Geometry/config helpers. */
 static int OptLoadDefMap(OptWorkflowStateStruct *Opt);
@@ -2497,7 +2524,9 @@ static CagdRType DesignUpdateMMA(OptWorkflowStateStruct *Opt,
     MMAData.ObjGrad = ObjGrad;
     MMAData.VolGrad = VolGrad;
     MMAData.ObjAtPrev = CurrentCompliance;
-    MMAData.TargetVolume = Opt -> Config.TargetVolumeFraction * Opt -> DefMapVol;
+    MMAData.TargetVolume =
+        Opt -> Config.TargetVolumeFraction * Opt -> DefMapVol -
+        Opt -> PassiveSkinVol;
 
     if (MMAData.TargetVolume <= Eps)
         MMAData.TargetVolume = CurrentVolume;
@@ -3290,6 +3319,33 @@ static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj)
     return Vol;
 }
 
+static CagdRType ComputeOwnedObjVol(IritPrsrObjectStruct *PObj,
+                                    OptElementOwnerType OwnerType)
+{
+    CagdRType Vol = 0.0;
+
+    if (PObj == NULL)
+        return 0.0;
+    if (IRIT_PRSR_IS_OLST_OBJ(PObj)) {
+        int I;
+        IritPrsrObjectStruct *Child;
+
+        for (I = 0; (Child = IritPrsrListObjectGet(PObj, I)) != NULL; ++I)
+            Vol += ComputeOwnedObjVol(Child, OwnerType);
+    }
+    else if (IRIT_PRSR_IS_TRIVAR_OBJ(PObj)) {
+        IritTrivTVStruct *TV;
+
+        for (TV = PObj -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
+            int TVOwner = IritMiscAttrGetIntAttrib(TV -> Attr,
+                                                   "OptOwnerType");
+            if (TVOwner == OwnerType)
+                Vol += fabs(IritTrivTVVolume(TV, TRUE));
+        }
+    }
+    return Vol;
+}
+
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Writes the legacy thickness CSV file consumed by the geometry callback *
@@ -3797,9 +3853,90 @@ static IritPrsrObjectStruct *PreProcessTile(
             OPT_SUPPORT_SIDE,
             LclData -> BodyIndex == 1 && CBData -> TileIdxs[2] == 0);
     }
+    if (Tile != NULL &&
+        !TagTileMeshOwnership(Tile, Index, Opt -> L,
+                              Opt -> Config.SkinThickness)) {
+        fprintf(stderr,
+                "Failed to classify lattice/skin geometry for tile %d.\n",
+                Index);
+        IritPrsrFreeObject(Tile);
+        return NULL;
+    }
     if (Tile != NULL)
         Tile = IritGeomTransformObjectInPlace(Tile, CBData -> Mat);
     return Tile;
+}
+
+static CagdBType IsFullFaceSkinTV(const IritTrivTVStruct *TV,
+                                  CagdRType SkinThickness)
+{
+    IritCagdBBoxStruct BBox;
+    int Axis;
+    int FullAxes = 0;
+    int ThinBoundaryAxis = FALSE;
+    CagdRType Tol = IRIT_MAX(IRIT_UEPS * 100.0, SkinThickness * 1.0e-5);
+
+    if (TV == NULL || SkinThickness <= 0.0)
+        return FALSE;
+
+    IritTrivTVBBox(TV, &BBox);
+    for (Axis = 0; Axis < 3; ++Axis) {
+        CagdRType Extent = BBox.Max[Axis] - BBox.Min[Axis];
+
+        if (fabs(BBox.Min[Axis]) <= Tol &&
+            fabs(BBox.Max[Axis] - 1.0) <= Tol) {
+            ++FullAxes;
+        }
+        else if (Extent <= SkinThickness + Tol &&
+                 (fabs(BBox.Min[Axis]) <= Tol ||
+                  fabs(BBox.Max[Axis] - 1.0) <= Tol)) {
+            ThinBoundaryAxis = TRUE;
+        }
+    }
+
+    return FullAxes == 2 && ThinBoundaryAxis;
+}
+
+static int TagTileMeshOwnership(IritPrsrObjectStruct *Tile,
+                                int TileIndex,
+                                int ExpectedSubTiles,
+                                CagdRType SkinThickness)
+{
+    IritTrivTVStruct *TV;
+    int SubTileIndex = 0;
+    int SkinCount = 0;
+
+    if (Tile == NULL || !IRIT_PRSR_IS_TRIVAR_OBJ(Tile))
+        return FALSE;
+
+    for (TV = Tile -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
+        CagdBType IsSkin = IsFullFaceSkinTV(TV, SkinThickness);
+
+        IritMiscAttrSetIntAttrib(&TV -> Attr, "OptOwnerType",
+                                 IsSkin ? OPT_ELEMENT_OWNER_PASSIVE_SKIN
+                                        : OPT_ELEMENT_OWNER_LATTICE);
+        IritMiscAttrSetIntAttrib(&TV -> Attr, "OptTileIndex", TileIndex);
+        IritMiscAttrSetIntAttrib(&TV -> Attr, "OptSubTileIndex",
+                                 IsSkin ? -1 : SubTileIndex++);
+        if (IsSkin)
+            ++SkinCount;
+    }
+
+    if (SubTileIndex != ExpectedSubTiles) {
+        fprintf(stderr,
+                "Tile %d ownership mismatch: %d lattice trivariates, "
+                "expected %d; %d skin trivariates.\n",
+                TileIndex, SubTileIndex, ExpectedSubTiles, SkinCount);
+        return FALSE;
+    }
+    if (SkinThickness > 0.0 && SkinCount == 0) {
+        fprintf(stderr,
+                "Tile %d requested skin thickness %.8g but no full-face "
+                "skin trivariate was identified.\n",
+                TileIndex, (double) SkinThickness);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 /***************************************************************************
@@ -3999,11 +4136,17 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         BodyMS = NULL; /* MS owns the appended body object. */
     }
 
-    Opt -> LatticeVol = ComputeObjVol(MS) * ScaleVol;
+    Opt -> LatticeVol = ComputeOwnedObjVol(
+        MS, OPT_ELEMENT_OWNER_LATTICE) * ScaleVol;
+    Opt -> PassiveSkinVol = ComputeOwnedObjVol(
+        MS, OPT_ELEMENT_OWNER_PASSIVE_SKIN) * ScaleVol;
     if (Mode == 0) {
         IritMiscMatGenMatUnifScale(Opt -> Config.Scale, Mat);
         Scaled = IritGeomTransformObject(MS, Mat);
         if (Scaled == NULL)
+            return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
+
+        if (!BuildMeshPatchOwners(Opt, Scaled))
             return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
         IRIT_ZAP_MEM(&Save, sizeof(Save));
@@ -4031,6 +4174,134 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
 
     Ok = TRUE;
     return FinishMicroStructures(MV, BodyMS, Scaled, MS, Ok);
+}
+
+static int CountMeshPatchOwners(const IritPrsrObjectStruct *Obj)
+{
+    int Count = 0;
+
+    for ( ; Obj != NULL; Obj = Obj -> Pnext) {
+        if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
+            int I;
+            IritPrsrObjectStruct *Child;
+
+            for (I = 0; (Child = IritPrsrListObjectGet(Obj, I)) != NULL; ++I)
+                Count += CountMeshPatchOwners(Child);
+        }
+        else if (IRIT_PRSR_IS_TRIVAR_OBJ(Obj)) {
+            const IritTrivTVStruct *TV;
+
+            for (TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext)
+                ++Count;
+        }
+    }
+    return Count;
+}
+
+static int FillMeshPatchOwners(const IritPrsrObjectStruct *Obj,
+                               OptMeshPatchOwnerStruct *Owners,
+                               int Capacity,
+                               int *Index)
+{
+    for ( ; Obj != NULL; Obj = Obj -> Pnext) {
+        if (IRIT_PRSR_IS_OLST_OBJ(Obj)) {
+            int I;
+            IritPrsrObjectStruct *Child;
+
+            for (I = 0; (Child = IritPrsrListObjectGet(Obj, I)) != NULL; ++I) {
+                if (!FillMeshPatchOwners(Child, Owners, Capacity, Index))
+                    return FALSE;
+            }
+        }
+        else if (IRIT_PRSR_IS_TRIVAR_OBJ(Obj)) {
+            const IritTrivTVStruct *TV;
+
+            for (TV = Obj -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
+                OptMeshPatchOwnerStruct *Owner;
+                int OwnerType;
+
+                if (*Index >= Capacity)
+                    return FALSE;
+                OwnerType = IritMiscAttrGetIntAttrib(TV -> Attr,
+                                                     "OptOwnerType");
+                if (OwnerType != OPT_ELEMENT_OWNER_LATTICE &&
+                    OwnerType != OPT_ELEMENT_OWNER_PASSIVE_SKIN) {
+                    fprintf(stderr,
+                            "Exported trivariate is missing explicit mesh "
+                            "ownership metadata.\n");
+                    return FALSE;
+                }
+                Owner = &Owners[(*Index)++];
+                Owner -> OwnerType = (OptElementOwnerType) OwnerType;
+                Owner -> TileIndex = IritMiscAttrGetIntAttrib(
+                    TV -> Attr, "OptTileIndex");
+                Owner -> SubTileIndex = IritMiscAttrGetIntAttrib(
+                    TV -> Attr, "OptSubTileIndex");
+            }
+        }
+    }
+    return TRUE;
+}
+
+static int BuildMeshPatchOwners(OptWorkflowStateStruct *Opt,
+                                const IritPrsrObjectStruct *Geometry)
+{
+    int Count;
+    int Index = 0;
+    int P;
+
+    if (Opt -> MeshPatchOwners != NULL) {
+        IritFree(Opt -> MeshPatchOwners);
+        Opt -> MeshPatchOwners = NULL;
+    }
+    Opt -> MeshPatchOwnerCount = 0;
+
+    Count = CountMeshPatchOwners(Geometry);
+    if (Count <= 0)
+        return FALSE;
+    Opt -> MeshPatchOwners = (OptMeshPatchOwnerStruct *) OptAllocZero(
+        (size_t) Count, sizeof(OptMeshPatchOwnerStruct));
+    if (Opt -> MeshPatchOwners == NULL)
+        return FALSE;
+    if (!FillMeshPatchOwners(Geometry, Opt -> MeshPatchOwners, Count, &Index) ||
+        Index != Count) {
+        IritFree(Opt -> MeshPatchOwners);
+        Opt -> MeshPatchOwners = NULL;
+        return FALSE;
+    }
+    Opt -> MeshPatchOwnerCount = Count;
+
+    if (Opt -> Lattice.FEMTopologyBound) {
+        long long ExpectedElements = (long long) Count * Opt -> MeshSample;
+
+        if (ExpectedElements != Opt -> FEM.ElementCount) {
+            fprintf(stderr,
+                    "Persistent mesh ownership changed: %lld expected "
+                    "elements versus %d bound elements.\n",
+                    ExpectedElements, Opt -> FEM.ElementCount);
+            return FALSE;
+        }
+        for (P = 0; P < Count; ++P) {
+            int X;
+            const OptMeshPatchOwnerStruct *Owner =
+                &Opt -> MeshPatchOwners[P];
+
+            for (X = 0; X < Opt -> MeshSample; ++X) {
+                const OptElementStruct *Element =
+                    &Opt -> FEM.Elements[P * Opt -> MeshSample + X];
+
+                if (Element -> OwnerType != Owner -> OwnerType ||
+                    Element -> OwnerTileIndex != Owner -> TileIndex ||
+                    Element -> OwnerSubTileIndex != Owner -> SubTileIndex) {
+                    fprintf(stderr,
+                            "Persistent mesh ownership changed at patch %d "
+                            "element %d.\n", P, Element -> Id);
+                    return FALSE;
+                }
+            }
+        }
+    }
+    return TRUE;
 }
 
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile,
@@ -4694,68 +4965,82 @@ static int InitializePersistentTopology(OptWorkflowStateStruct *Opt)
 static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt)
 {
     long long ExpectedElements;
-    int B, U, V, W, L, X;
+    int P, X;
     int ElementIndex = 0;
+    int LatticePatchCount = 0;
+    int PassivePatchCount = 0;
 
-    ExpectedElements = (long long) Opt -> Lattice.TileCount *
-        Opt -> L * Opt -> MeshSample;
+    ExpectedElements = (long long) Opt -> MeshPatchOwnerCount * Opt -> MeshSample;
     if (ExpectedElements > INT_MAX ||
         Opt -> FEM.ElementCount != (int) ExpectedElements) {
         fprintf(stderr,
-                "Mesh/order mismatch: elements=%d, expected=%lld "
-                "(%d tiles x %d subtiles x %d elements/subtile).\n",
+                "Mesh/ownership mismatch: elements=%d, expected=%lld "
+                "(%d tagged geometry patches x %d elements/patch).\n",
                 Opt -> FEM.ElementCount, ExpectedElements,
-                Opt -> Lattice.TileCount, Opt -> L, Opt -> MeshSample);
+                Opt -> MeshPatchOwnerCount, Opt -> MeshSample);
         return FALSE;
     }
 
-    /* The INP exporter emits bodies in IRIT-call order and tiles in each
-     * body's local W/V/U order.  Convert that export order back into the
-     * unified logical lattice without adding body ownership to the model. */
-    for (B = 0; B < Opt -> DefMapCount; ++B) {
-        int Counts[3];
-        int Origin[3] = { 0, 0, 0 };
-        int I, D;
+    Opt -> PassiveSkinElementCount = 0;
+    for (P = 0; P < Opt -> MeshPatchOwnerCount; ++P) {
+        const OptMeshPatchOwnerStruct *Owner = &Opt -> MeshPatchOwners[P];
+        OptSubTileStruct *SubTile = NULL;
 
-        for (D = 0; D < 3; ++D)
-            Counts[D] = Opt -> Config.LatticeCountLists[D][B];
-        for (I = 0; I < B; ++I)
-            Origin[Opt -> StackAxis] +=
-                Opt -> Config.LatticeCountLists[Opt -> StackAxis][I];
+        if (Owner -> TileIndex < 0 ||
+            Owner -> TileIndex >= Opt -> Lattice.TileCount)
+            return FALSE;
+        if (Owner -> OwnerType == OPT_ELEMENT_OWNER_LATTICE) {
+            OptTileStruct *Tile = &Opt -> Lattice.Tiles[Owner -> TileIndex];
 
-        for (W = 0; W < Counts[2]; ++W) {
-            for (V = 0; V < Counts[1]; ++V) {
-                for (U = 0; U < Counts[0]; ++U) {
-                    int GlobalU = Origin[0] + U;
-                    int GlobalV = Origin[1] + V;
-                    int GlobalW = Origin[2] + W;
-                    int TileIndex = GlobalU + Opt -> Config.LatticeCountU *
-                        (GlobalV + Opt -> Config.LatticeCountV * GlobalW);
-                    OptTileStruct *Tile = &Opt -> Lattice.Tiles[TileIndex];
+            if (Owner -> SubTileIndex < 0 ||
+                Owner -> SubTileIndex >= Tile -> SubTileCount)
+                return FALSE;
+            SubTile = &Tile -> SubTiles[Owner -> SubTileIndex];
+            if (SubTile -> ElementIds != NULL)
+                return FALSE;
+            SubTile -> FirstElementIndex = ElementIndex;
+            SubTile -> ElementCount = Opt -> MeshSample;
+            SubTile -> ElementIds = (int *) OptAllocZero(
+                (size_t) SubTile -> ElementCount, sizeof(int));
+            if (SubTile -> ElementIds == NULL)
+                return FALSE;
+            ++LatticePatchCount;
+        }
+        else if (Owner -> OwnerType == OPT_ELEMENT_OWNER_PASSIVE_SKIN) {
+            ++PassivePatchCount;
+        }
+        else {
+            return FALSE;
+        }
 
-                    for (L = 0; L < Tile -> SubTileCount; ++L) {
-                        OptSubTileStruct *SubTile = &Tile -> SubTiles[L];
+        for (X = 0; X < Opt -> MeshSample; ++X) {
+            OptElementStruct *Element;
 
-                        SubTile -> FirstElementIndex = ElementIndex;
-                        SubTile -> ElementCount = Opt -> MeshSample;
-                        SubTile -> ElementIds = (int *) OptAllocZero(
-                            (size_t) SubTile -> ElementCount, sizeof(int));
-                        if (SubTile -> ElementIds == NULL)
-                            return FALSE;
-
-                        for (X = 0; X < SubTile -> ElementCount; ++X) {
-                            if (ElementIndex >= Opt -> FEM.ElementCount)
-                                return FALSE;
-                            SubTile -> ElementIds[X] =
-                                Opt -> FEM.Elements[ElementIndex].Id;
-                            ++ElementIndex;
-                        }
-                    }
-                }
-            }
+            if (ElementIndex >= Opt -> FEM.ElementCount)
+                return FALSE;
+            Element = &Opt -> FEM.Elements[ElementIndex];
+            Element -> OwnerType = Owner -> OwnerType;
+            Element -> OwnerTileIndex = Owner -> TileIndex;
+            Element -> OwnerSubTileIndex = Owner -> SubTileIndex;
+            if (SubTile != NULL)
+                SubTile -> ElementIds[X] = Element -> Id;
+            else
+                ++Opt -> PassiveSkinElementCount;
+            ++ElementIndex;
         }
     }
 
+    if (LatticePatchCount != Opt -> Lattice.TileCount * Opt -> L) {
+        fprintf(stderr,
+                "Lattice ownership mismatch: %d bound patches, expected %d.\n",
+                LatticePatchCount, Opt -> Lattice.TileCount * Opt -> L);
+        return FALSE;
+    }
+    fprintf(stderr,
+            "Mesh ownership: %d lattice patches, %d passive-skin patches; "
+            "%d passive-skin elements excluded from design updates.\n",
+            LatticePatchCount, PassivePatchCount,
+            Opt -> PassiveSkinElementCount);
     return ElementIndex == Opt -> FEM.ElementCount;
 }
 
@@ -4845,6 +5130,11 @@ static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
     ScalarFieldReset(&Opt -> SedData);
     ScalarFieldReset(&Opt -> VolumeData);
     DestroyLatticeModel(Opt);
+    if (Opt -> MeshPatchOwners != NULL) {
+        IritFree(Opt -> MeshPatchOwners);
+        Opt -> MeshPatchOwners = NULL;
+        Opt -> MeshPatchOwnerCount = 0;
+    }
 
     if (Opt -> DefMap != NULL) {
         IritTrivTVFreeList(Opt -> DefMap);
