@@ -3,6 +3,31 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-19 — Export Winglet material when SUPPORT is missing
+
+- In `legacy_fea.c`, continue writing the Winglet material and solid section
+  when the exported support surface is missing or empty. Emit `SUPPORT_NODES`
+  and its boundary condition only when support nodes are available.
+- The Winglet test pressure is set to 5 kPa in `legacy_fea.c`.
+- The material and section cards were verified in the existing INP after a
+  direct edit. The updated exporter was not run.
+
+## 2026-11-19 — Move the Winglet support to V-max
+
+- Changed `OPT_SUPPORT_SIDE` in `test.c` to select the first body's parametric
+  V-max face. The Winglet INP writer still fixes translations 1–3 at the
+  selected solid-element nodes.
+- The inspected V-max output contained no `SUPPORT` tag in the ITD and no
+  `SUPPORT` surface in the INP. The failing selection check remains unverified.
+
+## 2026-11-19 — Check per-tile skin presence directly
+
+- In `test.c`, track whether any of the six configured faces applies positive
+  skin thickness to the current tile and use that flag to gate refinement.
+  Keep the maximum applied thickness for passive-skin classification.
+- `git diff --check` passed for the source edit. No build or solver run was
+  performed.
+
 ## 2026-11-19 — Use zero target fraction to skip initial volume fitting
 
 Purpose: remove the redundant `use_target_volume` configuration switch.

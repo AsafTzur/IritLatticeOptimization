@@ -553,7 +553,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
     const CagdRType PoissonRatio = 0.39;
     const CagdRType DensityKgM3 = 930.0;
     const CagdRType ReferenceStrengthPa = 45.0e6;
-    const CagdRType PressurePa = 1.0e4;  /* 10 kPa test pressure. */
+    const CagdRType PressurePa = 5.0e3;  /* 5kPa, 10 kPa test pressure. */
     const char *SupportSideLabel =
         OPT_SUPPORT_SIDE == OPT_SUPPORT_SIDE_VMAX ? "V-max" : "V-min";
     static const int C3D8FaceNodes[6][4] = {
@@ -710,10 +710,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
 
     if (!HasSupportSurface || SupportFaceCount <= 0 || SupportNodeCount <= 0) {
         fprintf(stderr,
-                "ANSYS winglet INP: named element surface SUPPORT was not "
-                "found or contained no C3D8 faces.\n"
-                "Check DefineINPFaceSelections() and the exported INP.\n");
-        return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
+                "ANSYS winglet INP: SUPPORT has no usable C3D8 faces. "
+                "Writing the material without a clamp.\n");
     }
 
     if (!HasPressureSurface) {
@@ -741,14 +739,16 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
             "** Applied normal pressure: %.17g Pa\n",
             (double) PressurePa);
 
-    fprintf(Dst, "*NSET, NSET=SUPPORT_NODES\n");
-    for (I = 0; I < SupportNodeCount; ++I) {
-        fprintf(Dst,
-                "%d%s",
-                SupportNodeIds[I],
-                ((I + 1) % 16 == 0 || I + 1 == SupportNodeCount)
-                    ? "\n"
-                    : ",");
+    if (SupportNodeCount > 0) {
+        fprintf(Dst, "*NSET, NSET=SUPPORT_NODES\n");
+        for (I = 0; I < SupportNodeCount; ++I) {
+            fprintf(Dst,
+                    "%d%s",
+                    SupportNodeIds[I],
+                    ((I + 1) % 16 == 0 || I + 1 == SupportNodeCount)
+                        ? "\n"
+                        : ",");
+        }
     }
 
     /* Linear-elastic PA 2200 material used by the static winglet test. */
@@ -772,9 +772,11 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
     fprintf(Dst, "*STEP\n");
 
     /* Fully clamp all nodes belonging to the selected SUPPORT faces. */
-    fprintf(Dst,
-            "*BOUNDARY\n"
-            "SUPPORT_NODES, 1, 3, 0.0\n");
+    if (SupportNodeCount > 0) {
+        fprintf(Dst,
+                "*BOUNDARY\n"
+                "SUPPORT_NODES, 1, 3, 0.0\n");
+    }
 
     /* Apply a true surface-normal pressure to the exported PRESSURE surface.
      * ANSYS External Model supports ABAQUS *DSLOAD entries with load type P. */

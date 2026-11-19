@@ -1,5 +1,20 @@
 # Session Handoff
 
+## 2026-11-19 Winglet support and material export
+
+The first body's support selector was switched to V-max. The inspected V-max
+ITD and INP lacked support tags, while an earlier V-min INP had 208 support
+nodes. To diagnose V-max, check whether the callback reaches the last V tile
+row and whether candidate unit-tile faces pass the local Y=1 bounding-box
+test. The selector constants must be integers because the tagger takes an
+`int`.
+
+`legacy_fea.c` writes the PA 2200 material and section even if SUPPORT is
+missing, and emits a clamp only when support nodes are available. The material
+and section were also added directly to the inspected generated INP. `test.c`
+uses `HasSkin` to gate tile refinement. The staged whitespace check passed.
+No build or solver run was performed for these edits.
+
 Last updated: 2026-11-19
 
 ## 2026-11-19 target-volume flag removal

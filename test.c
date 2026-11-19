@@ -74,7 +74,7 @@
 #define OPT_SUPPORT_SIDE_VMIN   0
 #define OPT_SUPPORT_SIDE_VMAX   1
 #define OPT_SUPPORT_BODY_INDEX  0
-#define OPT_SUPPORT_SIDE        OPT_SUPPORT_SIDE_VMIN
+#define OPT_SUPPORT_SIDE        OPT_SUPPORT_SIDE_VMAX
 
 #if OPT_SUPPORT_SIDE != OPT_SUPPORT_SIDE_VMIN && \
     OPT_SUPPORT_SIDE != OPT_SUPPORT_SIDE_VMAX
@@ -2478,6 +2478,7 @@ static IritPrsrObjectStruct *PreProcessTile(
     switch (Opt -> Legacy.LType) {
         case 0: {
             CagdRType FaceSkin[IRIT_OPT_SKIN_FACE_COUNT][4] = { { 0.0 } };
+            CagdBType HasSkin = FALSE;
             int GlobalTile[3];
             int Face, Corner;
 
@@ -2493,11 +2494,10 @@ static IritPrsrObjectStruct *PreProcessTile(
                 CagdBType OnOuterFace = IsMaximumFace ?
                     GlobalTile[Axis] == AxisCount - 1 :
                     GlobalTile[Axis] == 0;
+                CagdRType Thickness = Opt -> Config.SkinFaceThickness[Face];
 
-                if (OnOuterFace) {
-                    CagdRType Thickness =
-                        Opt -> Config.SkinFaceThickness[Face];
-
+                if (OnOuterFace && Thickness > 0.0) {
+                    HasSkin = TRUE;
                     for (Corner = 0; Corner < 4; ++Corner)
                         FaceSkin[Face][Corner] = Thickness;
                     TileSkinThickness =
@@ -2541,7 +2541,7 @@ static IritPrsrObjectStruct *PreProcessTile(
                                             FALSE,
                                             NULL);
 
-            if (TileSkinThickness > 0.0) {
+            if (HasSkin) {
                 if (TRUE)
                 {
                     IritPrsrObjectStruct* UniformTile =
