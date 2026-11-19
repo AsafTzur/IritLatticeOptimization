@@ -5,12 +5,23 @@
 
 #define IRIT_OPT_MAX_PATH 1024
 #define IRIT_OPT_MAX_NAME 128
+#define IRIT_OPT_SKIN_FACE_COUNT 6
+
+enum OptSkinFaceIndex {
+    OPT_SKIN_U_MIN = 0,
+    OPT_SKIN_U_MAX = 1,
+    OPT_SKIN_V_MIN = 2,
+    OPT_SKIN_V_MAX = 3,
+    OPT_SKIN_W_MIN = 4,
+    OPT_SKIN_W_MAX = 5
+};
 
 typedef struct OptConfigStruct {
     char MacroShapePath[IRIT_OPT_MAX_PATH];
     int SimulationType;
     int LatticeType;
-    CagdRType SkinThickness;
+    /* U-min, U-max, V-min, V-max, W-min, W-max; zero disables a face. */
+    CagdRType SkinFaceThickness[IRIT_OPT_SKIN_FACE_COUNT];
     int LatticeCountU, LatticeCountV, LatticeCountW;
     int *LatticeCountLists[3];
     int LatticeCountListLengths[3];
@@ -24,7 +35,6 @@ typedef struct OptConfigStruct {
     CagdRType TargetVolumeFraction;
     CagdRType TargetVolumeFractionTol;
     int OptimizationAlgorithm;
-    CagdBType UseTargetVolume;
     CagdBType GeometryOnly;
 
     char BaseFolder[IRIT_OPT_MAX_PATH];

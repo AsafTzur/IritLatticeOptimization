@@ -50,6 +50,14 @@ lattice-owned elements bind to subtiles and participate in design updates.
 Passive-skin patch ownership is validated across iterations and its fixed
 volume is separated from the evolving lattice-volume constraint.
 
+Exterior skin is configured as six thicknesses ordered U-min, U-max, V-min,
+V-max, W-min, W-max. Zero disables a face. Skin is generated only on the
+corresponding boundary of the unified global tile grid, not on internal tile
+or consecutive-body interfaces.
+
+`target_volume_fraction = 0` skips the initial volume-fitting loop; a positive
+fraction enables it. There is no separate target-volume enable flag.
+
 ## Terminology
 
 ### Body

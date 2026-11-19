@@ -95,6 +95,48 @@ static int ConfigParseReal(const char *Text, CagdRType *Value)
     return TRUE;
 }
 
+static int ConfigParseFixedRealArray(const char *Text,
+                                     CagdRType *Values,
+                                     int ExpectedCount)
+{
+    const char *Cursor = Text;
+    int Count = 0;
+
+    if (Text == NULL || Values == NULL || ExpectedCount <= 0)
+        return FALSE;
+    while (isspace((unsigned char) *Cursor))
+        ++Cursor;
+    if (*Cursor == '[')
+        ++Cursor;
+
+    while (*Cursor != '\0') {
+        char *End;
+        double Parsed;
+
+        while (isspace((unsigned char) *Cursor) || *Cursor == ',')
+            ++Cursor;
+        if (*Cursor == ']') {
+            ++Cursor;
+            break;
+        }
+        if (*Cursor == '\0' || Count >= ExpectedCount)
+            return FALSE;
+        errno = 0;
+        Parsed = strtod(Cursor, &End);
+        if (End == Cursor || errno == ERANGE || !isfinite(Parsed))
+            return FALSE;
+        Values[Count++] = (CagdRType) Parsed;
+        Cursor = End;
+        while (isspace((unsigned char) *Cursor))
+            ++Cursor;
+        if (*Cursor != '\0' && *Cursor != ',' && *Cursor != ']')
+            return FALSE;
+    }
+    while (isspace((unsigned char) *Cursor))
+        ++Cursor;
+    return Count == ExpectedCount && *Cursor == '\0';
+}
+
 static CagdBType ConfigParseBool(const char *Value)
 {
     return Value != NULL &&
@@ -223,7 +265,6 @@ void OptimizationConfigInit(OptConfigStruct *Config)
     Config->TargetVolumeFraction = CONFIG_INVALID_REAL;
     Config->TargetVolumeFractionTol = CONFIG_INVALID_REAL;
     Config->OptimizationAlgorithm = 1;
-    Config->UseTargetVolume = TRUE;
     Config->Scale = 0.015;
     Config->Density = 2700.0;
     Config->YoungsModulus = 6.9e10;
@@ -305,7 +346,9 @@ static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
     CONFIG_STRING("macro_shape_file", MacroShapePath);
     CONFIG_INT("simulation_type", SimulationType);
     CONFIG_INT("lattice_type", LatticeType);
-    CONFIG_REAL("skin_thickness", SkinThickness);
+    if (strcmp(Key, "skin_face_thickness") == 0)
+        return ConfigParseFixedRealArray(
+            Value, Config->SkinFaceThickness, IRIT_OPT_SKIN_FACE_COUNT);
     if (strcmp(Key, "lattice_count_u") == 0) {
         if (!ConfigParseCountList(Value, &Config->LatticeCountLists[0],
                                   &Config->LatticeCountListLengths[0])) return FALSE;
@@ -336,9 +379,6 @@ static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
     CONFIG_INT("max_iterations", MaxIterations);
     CONFIG_INT("convergence_iterations", ConvergenceIterations);
     CONFIG_REAL("thickness_change_tolerance", ThicknessChangeTolerance);
-    if (strcmp(Key, "use_target_volume") == 0) {
-        Config->UseTargetVolume = ConfigParseBool(Value); return TRUE;
-    }
     if (strcmp(Key, "target_volume_fraction") == 0)
         return ConfigIsBlank(Value) || ConfigParseReal(Value, &Config->TargetVolumeFraction);
     if (strcmp(Key, "target_volume_fraction_tol") == 0)
@@ -411,6 +451,8 @@ static int ConfigParseFile(const char *FileName,
 
 int OptimizationConfigValidate(const OptConfigStruct *Config)
 {
+    int SkinFace;
+    CagdBType HasSkin = FALSE;
     size_t Length;
 
     if (Config == NULL || Config->BodyStackAxis < -1 || Config->BodyStackAxis > 2)
@@ -426,9 +468,15 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
         Config->LatticeCountU <= 0 || Config->LatticeCountV <= 0 ||
         Config->LatticeCountW <= 0)
         return FALSE;
-    if (!isfinite(Config->SkinThickness) || Config->SkinThickness < 0.0 ||
-        Config->SkinThickness > 0.5 ||
-        (Config->SkinThickness > 0.0 && Config->LatticeType != 0))
+    for (SkinFace = 0; SkinFace < IRIT_OPT_SKIN_FACE_COUNT; ++SkinFace) {
+        CagdRType Thickness = Config->SkinFaceThickness[SkinFace];
+
+        if (!isfinite(Thickness) || Thickness < 0.0 || Thickness > 0.5)
+            return FALSE;
+        if (Thickness > 0.0)
+            HasSkin = TRUE;
+    }
+    if (HasSkin && Config->LatticeType != 0)
         return FALSE;
     if (Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[1] ||
         Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[2])
@@ -436,6 +484,13 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
     if (Config->MeshSample <= 1 ||
         (double) (Config->MeshSample - 1) * (Config->MeshSample - 1) *
             (Config->MeshSample - 1) > INT_MAX)
+        return FALSE;
+    if (!isfinite(Config->TargetVolumeFraction) ||
+        Config->TargetVolumeFraction < 0.0 ||
+        Config->TargetVolumeFraction > 1.0 ||
+        !isfinite(Config->TargetVolumeFractionTol) ||
+        Config->TargetVolumeFractionTol < 0.0 ||
+        Config->TargetVolumeFractionTol >= 1.0)
         return FALSE;
     if (Config->Scale <= 0.0 || !isfinite(Config->Scale) ||
         Config->RemoveThinTiles || Config->InitialThickness <= 0.0 ||

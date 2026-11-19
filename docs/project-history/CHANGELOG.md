@@ -3,6 +3,51 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-19 — Use zero target fraction to skip initial volume fitting
+
+Purpose: remove the redundant `use_target_volume` configuration switch.
+
+Changes:
+
+- Removed `UseTargetVolume` from `OptConfigStruct` and removed parsing of
+  `use_target_volume`.
+- Changed workflow dispatch so `target_volume_fraction > 0` runs the initial
+  fitting loop, while zero starts directly from `initial_thickness`.
+- Added explicit validation that the fraction is in `[0, 1]` and its relative
+  tolerance is in `[0, 1)`.
+- Updated `opt_config.txt` to use `target_volume_fraction = 0`.
+
+Verification:
+
+- Visual C++ compilation and whitespace validation are recorded with the
+  accompanying six-face skin change below.
+
+## 2026-11-19 — Configure skin thickness independently on six outer faces
+
+Purpose: allow a run to select any combination of U/V/W minimum and maximum
+exterior skins, including different thicknesses on opposing faces.
+
+Changes:
+
+- Replaced scalar `SkinThickness` with the fixed six-entry
+  `SkinFaceThickness` configuration array ordered U-min, U-max, V-min, V-max,
+  W-min, W-max.
+- Added bracketed `skin_face_thickness` parsing and validation requiring six
+  finite values between 0 and 0.5; nonzero skin remains limited to lattice
+  type 0.
+- Applied each value to the corresponding four IRIT face-corner boundary
+  parameters only when the tile lies on that outer global lattice boundary.
+- Kept per-tile passive-skin ownership detection and refinement active only
+  when that tile actually receives a configured skin.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` and `optimization_config_parser.c` in x64
+  C mode with `/W4`; only the existing IRIT nameless-union warnings and the
+  existing constant-condition warning were emitted.
+- `git diff --check` reported no whitespace errors.
+- No complete geometry or solver run was performed.
+
 ## 2026-11-19 — Isolate legacy solver and INP augmentation code
 
 Purpose: compact the optimization driver and make the CalculiX backend and

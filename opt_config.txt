@@ -12,8 +12,9 @@ macro_shape_file = Winglet.itd
 simulation_type = 1
 # Lattice Type = Tile type, 0 = 3Dcross, 1=Smooth 3DCross, 2=DiagonalTile
 lattice_type = 0
-# Skin thickness for lattice type 0: 0 disables skin; maximum is 0.5.
-skin_thickness = 0.05
+# Exterior skin thicknesses for lattice type 0, ordered as:
+# [U-min, U-max, V-min, V-max, W-min, W-max]. Zero disables that face.
+skin_face_thickness = [0, 0, 0.15, 0.1, 0, 0]
 # Multiple values are still accepted by the parser, for example:
 # lattice_count_u = 2, 3
 # lattice_count_v = 5, 4
@@ -31,13 +32,11 @@ max_iterations = 25
 convergence_iterations = 3
 thickness_change_tolerance = 0.0025
 
-# 1 = run the initial geometry-only target-volume fitting loop.
-# 0 = skip that loop and start directly from initial_thickness.
-# This flag does NOT disable target_volume_fraction for MMA.
-use_target_volume = 0
 use_microstructure_ffd = true
 
-target_volume_fraction = 0.40
+# 0 skips initial target-volume fitting and starts from initial_thickness.
+# A value in (0, 1] enables fitting to that volume fraction.
+target_volume_fraction = 0
 target_volume_fraction_tol = 0.1
 
 optimization_algorithm = 3

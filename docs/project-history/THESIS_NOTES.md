@@ -94,6 +94,12 @@ the repaired path. This is an engineering observation, not yet a general proof;
 future experiments should record geometry, deformation settings, Jacobian
 statistics, runtime, and failure counts.
 
+Implementation update, 2026-11-19: exterior skin thickness is independently
+configurable on the six parametric sides. The configuration is applied only
+at the unified lattice's outer boundaries, allowing open, asymmetric, or
+closed skins without introducing intentional internal interface skins. This
+is compile-verified but still requires geometry and solver validation.
+
 ## Passive-skin optimization ownership
 
 The skin must participate in structural analysis while remaining outside the

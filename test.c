@@ -204,7 +204,6 @@ typedef struct OptNeighbourEntryStruct {
 
 typedef struct UserMicroLocalDataStruct {
     IritTrivTVStruct *DefMap;
-    CagdRType BndryThickness;
     LclThicknessFuncType ThicknessFuncCB;
     OptWorkflowStateStruct *Opt;
     int Counts[3];
@@ -576,7 +575,7 @@ static int RunWorkflow(OptWorkflowStateStruct *Opt)
         OptFatalF("Failed to initialize legacy data file: %s",
                   Opt -> Config.DataNewFile);
 
-    if (Opt -> Config.UseTargetVolume) {
+    if (Opt -> Config.TargetVolumeFraction > 0.0) {
         if (!LatticeByVolumeFraction(Opt)) {
             OptWriteFinishReason(Opt, "Initial volume-fraction setup failed", 0);
             return FALSE;
@@ -2411,6 +2410,7 @@ static IritPrsrObjectStruct *PreProcessTile(
     int BaseIndex;
     int Arms = 6;
     CagdBType Circle = FALSE;
+    CagdRType TileSkinThickness = 0.0;
 
     assert(Tile == NULL);
 
@@ -2477,38 +2477,58 @@ static IritPrsrObjectStruct *PreProcessTile(
 
     switch (Opt -> Legacy.LType) {
         case 0: {
-            static const CagdRType NoSkin[4] =
-                { 0.0, 0.0, 0.0, 0.0 };
-            CagdRType UniformSkin[4];
-            int SkinIndex;
+            CagdRType FaceSkin[IRIT_OPT_SKIN_FACE_COUNT][4] = { { 0.0 } };
+            int GlobalTile[3];
+            int Face, Corner;
 
-            for (SkinIndex = 0; SkinIndex < 4; ++SkinIndex)
-                UniformSkin[SkinIndex] = Opt -> Config.SkinThickness;
+            for (Face = 0; Face < 3; ++Face)
+                GlobalTile[Face] = LclData -> GridOrigin[Face] +
+                                   CBData -> TileIdxs[Face];
+            for (Face = 0; Face < IRIT_OPT_SKIN_FACE_COUNT; ++Face) {
+                int Axis = Face / 2;
+                int IsMaximumFace = Face % 2;
+                int AxisCount = Axis == 0 ? Opt -> Config.LatticeCountU :
+                                Axis == 1 ? Opt -> Config.LatticeCountV :
+                                            Opt -> Config.LatticeCountW;
+                CagdBType OnOuterFace = IsMaximumFace ?
+                    GlobalTile[Axis] == AxisCount - 1 :
+                    GlobalTile[Axis] == 0;
+
+                if (OnOuterFace) {
+                    CagdRType Thickness =
+                        Opt -> Config.SkinFaceThickness[Face];
+
+                    for (Corner = 0; Corner < 4; ++Corner)
+                        FaceSkin[Face][Corner] = Thickness;
+                    TileSkinThickness =
+                        IRIT_MAX(TileSkinThickness, Thickness);
+                }
+            }
 
             if (!PreProcessTile1FaceParam(
                                       &WMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 0][1],
-                                      Circle, UniformSkin) ||
+                                      Circle, FaceSkin[OPT_SKIN_W_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &WMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 1][1],
-                                      Circle, UniformSkin) ||
+                                      Circle, FaceSkin[OPT_SKIN_W_MIN]) ||
                 !PreProcessTile1FaceParam(
                                       &VMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 2][1],
-                                      Circle, NoSkin) ||
+                                      Circle, FaceSkin[OPT_SKIN_V_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &VMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 3][1],
-                                      Circle, NoSkin) ||
+                                      Circle, FaceSkin[OPT_SKIN_V_MIN]) ||
                 !PreProcessTile1FaceParam(
                                       &UMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 4][1],
-                                      Circle, NoSkin) ||
+                                      Circle, FaceSkin[OPT_SKIN_U_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &UMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 5][1],
-                                      Circle, NoSkin)) {
+                                      Circle, FaceSkin[OPT_SKIN_U_MIN])) {
                 return NULL;
             }
 
@@ -2521,7 +2541,7 @@ static IritPrsrObjectStruct *PreProcessTile(
                                             FALSE,
                                             NULL);
 
-            if (Opt->Config.SkinThickness > 0.0) {
+            if (TileSkinThickness > 0.0) {
                 if (TRUE)
                 {
                     IritPrsrObjectStruct* UniformTile =
@@ -2653,7 +2673,7 @@ static IritPrsrObjectStruct *PreProcessTile(
     }
     if (Tile != NULL &&
         !TagTileMeshOwnership(Tile, Index, Opt -> L,
-                              Opt -> Config.SkinThickness)) {
+                              TileSkinThickness)) {
         fprintf(stderr,
                 "Failed to classify lattice/skin geometry for tile %d.\n",
                 Index);
@@ -2872,7 +2892,6 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         LclData.Opt = Opt;
         LclData.BodyIndex = B;
         LclData.DefMap = BodyMap;
-        LclData.BndryThickness = Opt -> Config.SkinThickness;
         for (D = 0; D < 3; ++D) {
             LclData.Counts[D] = Counts[D];
             LclData.GridOrigin[D] = GridOrigin[D];

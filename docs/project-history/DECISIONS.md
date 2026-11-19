@@ -1,5 +1,29 @@
 # Design Decisions
 
+## D-017 — Let zero target fraction disable initial volume fitting
+
+Date: 2026-11-19
+
+Decision: remove the separate `UseTargetVolume` boolean. A positive
+`TargetVolumeFraction` enables the initial geometry-only fitting loop; zero
+skips it and begins from `InitialThickness`.
+
+Reason: the fraction already carries the enabled/disabled state, so a second
+flag permits contradictory configurations without adding information.
+
+## D-016 — Express exterior skin as six ordered face thicknesses
+
+Date: 2026-11-19
+
+Decision: configure exterior skin with one fixed array ordered
+`[U-min, U-max, V-min, V-max, W-min, W-max]`. A zero disables that face; a
+positive value is its thickness. Apply values only to tiles on the matching
+outer boundary of the unified global lattice.
+
+Reason: one array supports no skin, one-sided skin, unequal opposing skins,
+and a closed skin without separate face flags. Global-boundary checks prevent
+unwanted skins at internal tile and consecutive-body interfaces.
+
 ## D-015 — Isolate legacy FEA behavior behind one private include
 
 Date: 2026-11-19

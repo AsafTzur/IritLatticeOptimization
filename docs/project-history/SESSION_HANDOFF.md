@@ -2,6 +2,24 @@
 
 Last updated: 2026-11-19
 
+## 2026-11-19 target-volume flag removal
+
+`use_target_volume` and `OptConfigStruct.UseTargetVolume` were removed. The
+initial target-volume fitting loop now runs only when
+`target_volume_fraction > 0`; zero starts directly from the configured initial
+thickness. The fraction and tolerance now receive explicit range validation.
+
+## 2026-11-19 six-face skin configuration
+
+The former scalar `skin_thickness` setting was replaced by
+`skin_face_thickness = [U-min, U-max, V-min, V-max, W-min, W-max]`. Each
+positive entry is passed uniformly to the four IRIT boundary parameters of
+that face only for tiles on the corresponding outer global-grid boundary;
+zero disables it. The parser requires six finite values in `[0, 0.5]`, and
+skin remains supported only for lattice type 0. Direct Visual C++ x64
+compilation succeeded with existing warnings; no geometry or solver run was
+performed.
+
 ## 2026-11-19 legacy FEA extraction
 
 The CalculiX backend and the current hard-coded ANSYS INP augmentation were
