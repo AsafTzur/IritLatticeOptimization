@@ -28,6 +28,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\test\test.c" />
+    <None Include="..\..\test\legacy_fea.c" />
+    <ClInclude Include="..\..\test\legacy_fea.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{D0F3A3C7-E9F0-47CA-8D70-F0568B8C9EC8}</ProjectGuid>

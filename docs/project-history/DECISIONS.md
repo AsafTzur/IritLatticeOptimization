@@ -1,5 +1,21 @@
 # Design Decisions
 
+## D-015 — Isolate legacy FEA behavior behind one private include
+
+Date: 2026-11-19
+
+Decision: move the CalculiX backend and temporary hard-coded ANSYS INP
+augmentation into `legacy_fea.c/.h`, included privately by `test.c` after its
+workflow types are defined. Do not expose the optimizer's private workflow
+structure as a new public cross-module contract merely to preserve code that
+is expected to be removed.
+
+Reason: the future IRIT `InpFEMParams` path should produce solver-ready INP
+data directly, and CalculiX is not part of the intended workflow. The private
+include compacts the main driver while preserving behavior and makes eventual
+removal localized. A conventional separately compiled adapter can replace it
+if this compatibility code becomes long-lived.
+
 ## D-014 — Carry explicit passive-skin ownership through one connected INP
 
 Date: 2026-11-13

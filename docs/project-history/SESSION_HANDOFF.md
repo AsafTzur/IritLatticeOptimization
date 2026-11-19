@@ -2,6 +2,18 @@
 
 Last updated: 2026-11-19
 
+## 2026-11-19 legacy FEA extraction
+
+The CalculiX backend and the current hard-coded ANSYS INP augmentation were
+moved out of `test.c` into `legacy_fea.c/.h`, including solver process helpers
+and UVW SUPPORT/PRESSURE face tagging. `test.c` privately includes the
+implementation after defining its internal workflow structures, preserving
+behavior without publishing those internals. Visual C++ x64 compilation of
+`test.c` and `optimization_config_parser.c` succeeded with existing warnings;
+no solver runtime was performed. The compatibility module is intended to be
+deleted when IRIT emits complete `InpFEMParams`-driven analysis data and the
+CalculiX path is retired.
+
 ## 2026-11-19 compact INP FEM parameter examples
 
 Added `InpFEMParams_examples.txt` with concise proposed IRIT list payloads for

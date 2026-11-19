@@ -18,6 +18,8 @@ thicknesses over repeated iterations.
   `IritOptRun(const OptConfigStruct *)` entry-point declaration.
 - `optimization_config_parser.c/.h`: the current text-file adapter that
   initializes, populates, validates, and releases `OptConfigStruct` inputs.
+- `legacy_fea.c/.h`: removable compatibility module containing the CalculiX
+  backend and the current hard-coded ANSYS INP analysis additions.
 - `opt_config.txt`: editable run, material, optimization, and path settings.
 
 The `t1` directory contains older comparison copies. It is not a substitute

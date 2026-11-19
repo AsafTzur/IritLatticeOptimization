@@ -3,6 +3,30 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-19 — Isolate legacy solver and INP augmentation code
+
+Purpose: compact the optimization driver and make the CalculiX backend and
+temporary hard-coded ANSYS INP additions independently removable.
+
+Changes:
+
+- Moved the CalculiX runner, output conversion, and process helpers from
+  `test.c` into `legacy_fea.c`.
+- Moved the current cantilever/winglet INP rewriting and UVW SUPPORT/PRESSURE
+  face-tagging code into the same compatibility module.
+- Added `legacy_fea.h`; `test.c` now contains one private implementation
+  include and retains the existing simulation-dispatch behavior.
+- Listed the compatibility files in `test.vcxproj` without compiling
+  `legacy_fea.c` separately.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` and `optimization_config_parser.c` in x64
+  C mode with `/W4`; only the existing IRIT nameless-union warnings and the
+  existing constant-condition warning were emitted.
+- `git diff --check` reported no whitespace errors.
+- No ANSYS or CalculiX runtime analysis was performed.
+
 ## 2026-11-13 — Separate passive skin from optimizable lattice ownership
 
 Purpose: keep full-face skin in the structural model while preventing its
