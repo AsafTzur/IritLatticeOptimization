@@ -1,0 +1,27 @@
+/* Proposed compact IRIT list syntax; token spelling must match the future parser. */
+
+/* STRUCTURAL: aluminum cantilever, fixed U-min, 100 kPa on U-max. */
+Lattice = microstruct(/* geometry arguments */);
+E = 69e9; Nu = 1.0/3.0; Density = 2700.0;
+InpParams = list("Structural", list("schema_version", 1), list("units", "SI"),
+  list("material", list(E, Nu, Density)),
+  list("regions", list("FIXED_ROOT", "", "node_set", list("U_MIN")), list("LOADED_END", "", "surface_set", list("U_MAX")), list("WHOLE_LATTICE", "", "volume_set", list())),
+  list("supports", list("FIXED_ROOT", list("X", "Y", "Z"), list(0, 0, 0, 0, 0, 0))),
+  list("loads", list("LOADED_END", "pressure", 100e3, list(0, 0, 0))),
+  list("results", list("displacement", "", "magnitude", "maximum", "m"), list("stress", "", "equivalent", "maximum", "Pa"), list("reaction_force", "FIXED_ROOT", "all", "sum", "N"), list("strain_energy", "WHOLE_LATTICE", "all", "sum", "J")));
+attrib(Lattice, "InpFEMParams", InpParams);
+save("StructuralLattice.inp", Lattice);
+
+/* THERMAL: aluminum, fixed U-min, heat flux on U-max, convection and radiation. */
+Lattice = microstruct(/* geometry arguments */);
+Conductivity = 167.0;
+InpParams = list("SteadyStateThermal", list("schema_version", 1), list("units", "SI"),
+  list("material", list(Conductivity)),
+  list("regions", list("COLD_FACE", "", "node_set", list("U_MIN")), list("HOT_FACE", "", "surface_set", list("U_MAX")), list("CONVECTION_FACES", "", "surface_set", list("V_MIN", "V_MAX")), list("RADIATION_FACES", "", "surface_set", list("W_MIN", "W_MAX")), list("WHOLE_LATTICE", "", "volume_set", list())),
+  list("fixed_temperatures", list("COLD_FACE", 293.15)),
+  list("heat_loads", list("HOT_FACE", "heat_flux", 50e3)),
+  list("convections", list("CONVECTION_FACES", 15.0, 293.15)),
+  list("radiations", list("RADIATION_FACES", 0.80, 293.15)),
+  list("results", list("temperature", "", "all", "maximum", "K"), list("temperature", "", "all", "minimum", "K"), list("heat_flux", "", "magnitude", "maximum", "W/m^2"), list("thermal_gradient", "", "magnitude", "maximum", "K/m")));
+attrib(Lattice, "InpFEMParams", InpParams);
+save("ThermalLattice.inp", Lattice);

@@ -1,6 +1,31 @@
 # Session Handoff
 
-Last updated: 2026-11-13
+Last updated: 2026-11-19
+
+## 2026-11-19 compact INP FEM parameter examples
+
+Added `InpFEMParams_examples.txt` with concise proposed IRIT list payloads for
+standalone structural and steady-state thermal INP export. The examples cover
+SI units, materials, geometric regions, supports or thermal conditions, loads,
+and result requests. Token spelling and list parsing remain proposals because
+the schema is still not connected to the IRIT serializer or INP exporter.
+
+## 2026-11-18 beam-gradient diagnosis
+
+For a reported 20-by-1-by-2 beam whose long direction is logical U, source
+inspection found that the active ANSYS path is still the hard-coded winglet
+load case. `RunSimulation()` calls `AddAnsysAnalysisDefinitionWinglet()`.
+Support selection marks every tile in logical row V=0 and selects its local
+V-min face. With `lattice_count_v = 1`, that clamps one face of every tile
+along the complete 20-tile length rather than clamping the U-min beam end.
+Pressure selection is separately hard-coded to W-min tiles of zero-based body
+index 1, so it is absent for a single-body beam or applied to the wrong region
+for a multi-body beam. This load case does not create the expected cantilever
+bending-moment gradient and is the leading explanation for the repetitive,
+non-tapered optimized geometry. The generic fallback is also axis-specific: it
+fixes minimum global Z and loads maximum global Z, so it is not automatically
+correct for a U-long beam. No source code was changed and no run files from the
+reported experiment were available for result-level validation.
 
 ## 2026-11-13 passive-skin ownership repair
 
