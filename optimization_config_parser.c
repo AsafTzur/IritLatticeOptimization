@@ -27,6 +27,11 @@ typedef int (*ConfigEntryHandlerType)(const char *Key,
                                       const char *Value,
                                       void *Context);
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Trims leading and trailing whitespace in place and returns the first      *
+* non-whitespace character.                                                *
+***************************************************************************/
 static char *ConfigTrim(char *Text)
 {
     char *End;
@@ -40,6 +45,10 @@ static char *ConfigTrim(char *Text)
     return Text;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tests whether a string is NULL, empty, or whitespace only.               *
+***************************************************************************/
 static int ConfigIsBlank(const char *Text)
 {
     if (Text == NULL)
@@ -52,6 +61,10 @@ static int ConfigIsBlank(const char *Text)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Removes an optional UTF-8 byte-order mark from the first parsed line.     *
+***************************************************************************/
 static void ConfigStripUtf8Bom(char *Line)
 {
     const unsigned char *Bytes = (const unsigned char *) Line;
@@ -60,6 +73,10 @@ static void ConfigStripUtf8Bom(char *Line)
         memmove(Line, Line + 3, strlen(Line + 3) + 1);
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses one range-checked integer value.                                  *
+***************************************************************************/
 static int ConfigParseInt(const char *Text, int *Value)
 {
     char *End;
@@ -78,6 +95,10 @@ static int ConfigParseInt(const char *Text, int *Value)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses one finite real value.                                            *
+***************************************************************************/
 static int ConfigParseReal(const char *Text, CagdRType *Value)
 {
     char *End;
@@ -95,19 +116,25 @@ static int ConfigParseReal(const char *Text, CagdRType *Value)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses a bracketed, comma-separated real array of the requested length.  *
+***************************************************************************/
 static int ConfigParseFixedRealArray(const char *Text,
                                      CagdRType *Values,
                                      int ExpectedCount)
 {
     const char *Cursor = Text;
     int Count = 0;
+    CagdBType Closed = FALSE;
 
     if (Text == NULL || Values == NULL || ExpectedCount <= 0)
         return FALSE;
     while (isspace((unsigned char) *Cursor))
         ++Cursor;
-    if (*Cursor == '[')
-        ++Cursor;
+    if (*Cursor != '[')
+        return FALSE;
+    ++Cursor;
 
     while (*Cursor != '\0') {
         char *End;
@@ -116,6 +143,7 @@ static int ConfigParseFixedRealArray(const char *Text,
         while (isspace((unsigned char) *Cursor) || *Cursor == ',')
             ++Cursor;
         if (*Cursor == ']') {
+            Closed = TRUE;
             ++Cursor;
             break;
         }
@@ -134,9 +162,13 @@ static int ConfigParseFixedRealArray(const char *Text,
     }
     while (isspace((unsigned char) *Cursor))
         ++Cursor;
-    return Count == ExpectedCount && *Cursor == '\0';
+    return Closed && Count == ExpectedCount && *Cursor == '\0';
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses the accepted textual true values; all other values are false.      *
+***************************************************************************/
 static CagdBType ConfigParseBool(const char *Value)
 {
     return Value != NULL &&
@@ -145,6 +177,51 @@ static CagdBType ConfigParseBool(const char *Value)
          CONFIG_STRICMP(Value, "on") == 0);
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses one U/V/W minimum or maximum parametric-face name.                 *
+***************************************************************************/
+static int ConfigParseFace(const char *Value, int *Face)
+{
+    static const char *Names[IRIT_OPT_FACE_COUNT] = {
+        "u_min", "u_max", "v_min", "v_max", "w_min", "w_max"
+    };
+    int I;
+
+    if (Value == NULL || Face == NULL)
+        return FALSE;
+    for (I = 0; I < IRIT_OPT_FACE_COUNT; ++I) {
+        if (CONFIG_STRICMP(Value, Names[I]) == 0) {
+            *Face = I;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses the three binary fixed-translation flags in X/Y/Z order.           *
+***************************************************************************/
+static int ConfigParseDofArray(const char *Text, CagdBType Values[3])
+{
+    CagdRType Parsed[3];
+    int I;
+
+    if (!ConfigParseFixedRealArray(Text, Parsed, 3))
+        return FALSE;
+    for (I = 0; I < 3; ++I) {
+        if (Parsed[I] != 0.0 && Parsed[I] != 1.0)
+            return FALSE;
+        Values[I] = Parsed[I] != 0.0;
+    }
+    return TRUE;
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Joins a parent directory and child path with the platform separator.      *
+***************************************************************************/
 static void ConfigPathJoin(char *Destination,
                            size_t DestinationSize,
                            const char *Parent,
@@ -170,6 +247,10 @@ static void ConfigPathJoin(char *Destination,
                  Parent, CONFIG_PATH_SEP, Child);
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Allocates a replacement buffer, copies old bytes, and frees the old one.  *
+***************************************************************************/
 static void *ConfigReallocCopy(void *OldData,
                                size_t OldBytes,
                                size_t NewBytes)
@@ -188,6 +269,10 @@ static void *ConfigReallocCopy(void *OldData,
     return NewData;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses one positive-integer lattice-count list.                           *
+***************************************************************************/
 static int ConfigParseCountList(const char *Text, int **Values, int *Count)
 {
     const char *Cursor = Text;
@@ -252,6 +337,14 @@ void OptimizationConfigInit(OptConfigStruct *Config)
     IRIT_ZAP_MEM(Config, sizeof(*Config));
     Config->SimulationType = 1;
     Config->LatticeType = -1;
+    Config->FemSupportBodyIndex = 0;
+    Config->FemSupportFace = OPT_FACE_V_MAX;
+    Config->FemSupportDofs[0] = TRUE;
+    Config->FemSupportDofs[1] = TRUE;
+    Config->FemSupportDofs[2] = TRUE;
+    Config->FemPressureBodyIndex = 1;
+    Config->FemPressureFace = OPT_FACE_W_MIN;
+    Config->FemPressurePa = 5.0e3;
     Config->LatticeCountU = -1;
     Config->LatticeCountV = -1;
     Config->LatticeCountW = -1;
@@ -290,6 +383,10 @@ void OptimizationConfigFree(OptConfigStruct *Config)
     }
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Resolves default run paths relative to the configured root folder.        *
+***************************************************************************/
 static int ConfigResolvePaths(OptConfigStruct *Config)
 {
     char AnsysDirectory[IRIT_OPT_MAX_PATH];
@@ -331,6 +428,10 @@ static int ConfigResolvePaths(OptConfigStruct *Config)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Maps one parsed key-value entry into OptConfigStruct.                     *
+***************************************************************************/
 static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
 {
     OptConfigStruct *Config = (OptConfigStruct *) Context;
@@ -348,7 +449,16 @@ static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
     CONFIG_INT("lattice_type", LatticeType);
     if (strcmp(Key, "skin_face_thickness") == 0)
         return ConfigParseFixedRealArray(
-            Value, Config->SkinFaceThickness, IRIT_OPT_SKIN_FACE_COUNT);
+            Value, Config->SkinFaceThickness, IRIT_OPT_FACE_COUNT);
+    CONFIG_INT("fem_support_body", FemSupportBodyIndex);
+    if (strcmp(Key, "fem_support_face") == 0)
+        return ConfigParseFace(Value, &Config->FemSupportFace);
+    if (strcmp(Key, "fem_support_dofs") == 0)
+        return ConfigParseDofArray(Value, Config->FemSupportDofs);
+    CONFIG_INT("fem_pressure_body", FemPressureBodyIndex);
+    if (strcmp(Key, "fem_pressure_face") == 0)
+        return ConfigParseFace(Value, &Config->FemPressureFace);
+    CONFIG_REAL("fem_pressure_pa", FemPressurePa);
     if (strcmp(Key, "lattice_count_u") == 0) {
         if (!ConfigParseCountList(Value, &Config->LatticeCountLists[0],
                                   &Config->LatticeCountListLengths[0])) return FALSE;
@@ -415,6 +525,10 @@ static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
     return FALSE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Reads a key-value configuration file and dispatches recognized entries.   *
+***************************************************************************/
 static int ConfigParseFile(const char *FileName,
                            ConfigEntryHandlerType Handler,
                            void *Context)
@@ -468,7 +582,7 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
         Config->LatticeCountU <= 0 || Config->LatticeCountV <= 0 ||
         Config->LatticeCountW <= 0)
         return FALSE;
-    for (SkinFace = 0; SkinFace < IRIT_OPT_SKIN_FACE_COUNT; ++SkinFace) {
+    for (SkinFace = 0; SkinFace < IRIT_OPT_FACE_COUNT; ++SkinFace) {
         CagdRType Thickness = Config->SkinFaceThickness[SkinFace];
 
         if (!isfinite(Thickness) || Thickness < 0.0 || Thickness > 0.5)
@@ -477,6 +591,15 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
             HasSkin = TRUE;
     }
     if (HasSkin && Config->LatticeType != 0)
+        return FALSE;
+    if (Config->FemSupportBodyIndex < 0 || Config->FemPressureBodyIndex < 0 ||
+        Config->FemSupportFace < 0 ||
+        Config->FemSupportFace >= IRIT_OPT_FACE_COUNT ||
+        Config->FemPressureFace < 0 ||
+        Config->FemPressureFace >= IRIT_OPT_FACE_COUNT ||
+        (!Config->FemSupportDofs[0] && !Config->FemSupportDofs[1] &&
+         !Config->FemSupportDofs[2]) ||
+        !isfinite(Config->FemPressurePa) || Config->FemPressurePa < 0.0)
         return FALSE;
     if (Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[1] ||
         Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[2])
@@ -493,6 +616,10 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
         Config->TargetVolumeFractionTol >= 1.0)
         return FALSE;
     if (Config->Scale <= 0.0 || !isfinite(Config->Scale) ||
+        !isfinite(Config->Density) || Config->Density <= 0.0 ||
+        !isfinite(Config->YoungsModulus) || Config->YoungsModulus <= 0.0 ||
+        !isfinite(Config->PoissonRatio) || Config->PoissonRatio <= -1.0 ||
+        Config->PoissonRatio >= 0.5 ||
         Config->RemoveThinTiles || Config->InitialThickness <= 0.0 ||
         Config->MaxIterations <= 0 || Config->ConvergenceIterations <= 0 ||
         Config->ThicknessChangeTolerance <= 0.0 ||

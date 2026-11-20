@@ -1,5 +1,17 @@
 # Design Decisions
 
+## D-018 — Configure active structural regions in parametric space
+
+Date: 2026-11-19
+
+Decision: define the active support and pressure by zero-based macro-body index
+plus one of six parametric faces. Keep material scalars in the existing flat
+configuration and represent fixed support translations as `[X,Y,Z]` flags.
+
+Reason: mesh node and element IDs do not exist before export, while body and
+parametric-face identity are stable inputs to geometry generation. This also
+removes the Winglet-only V-max/W-min assumptions from the active path.
+
 ## D-017 — Let zero target fraction disable initial volume fitting
 
 Date: 2026-11-19

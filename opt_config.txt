@@ -1,15 +1,14 @@
 # =============================================================
-# Unified Optimization Configuration
 # Edit run settings first, then optimization settings, then the root folder.
 # Format: key = value
 # =============================================================
 
+
 # -------------------------------------------------------------
-# RUN DEFINITIONS
+# GEOMETRY
 # -------------------------------------------------------------
-macro_shape_file = Winglet.itd
-# 1 = ANSYS, 2 = CalculiX
-simulation_type = 1
+macro_shape_file = defMap2x2x2.itd
+scale = 0.001
 # Lattice Type = Tile type, 0 = 3Dcross, 1=Smooth 3DCross, 2=DiagonalTile
 lattice_type = 0
 # Exterior skin thicknesses for lattice type 0, ordered as:
@@ -20,35 +19,52 @@ skin_face_thickness = [0, 0, 0.15, 0.1, 0, 0]
 # lattice_count_v = 5, 4
 # lattice_count_w = 20, 10
 # Current single-body execution uses only the first U/V/W set.
+
 lattice_count_u = 5,5
 lattice_count_v = 4,10
-lattice_count_w = 1,1
+lattice_count_w = 3,1
 
 initial_thickness = 0.1
-
-mesh_sample = 4
-
-max_iterations = 25
-convergence_iterations = 3
 thickness_change_tolerance = 0.0025
 
 use_microstructure_ffd = true
+
+# -------------------------------------------------------------
+# RUN DEFINITIONS
+# -------------------------------------------------------------
+# 1 = ANSYS, 2 = CalculiX
+simulation_type = 1
+max_iterations = 25
+convergence_iterations = 3
+
+# -------------------------------------------------------------
+# FEM definitions. Body indices are zero based; faces are
+# u_min, u_max, v_min, v_max, w_min, or w_max.
+# -------------------------------------------------------------
+fem_support_body = 0
+fem_support_face = v_max
+# Fixed translational DOFs [X, Y, Z], where 1=fixed and 0=free.
+fem_support_dofs = [1, 1, 1]
+fem_pressure_body = 1
+fem_pressure_face = w_min
+fem_pressure_pa = 5000
+mesh_sample = 4
+
+density = 930
+youngs_modulus = 1800e6
+poisson_ratio = 0.39
+
+# -------------------------------------------------------------
+# OPTIMIZATION / MODEL CONFIGURATION
+# -------------------------------------------------------------
 
 # 0 skips initial target-volume fitting and starts from initial_thickness.
 # A value in (0, 1] enables fitting to that volume fraction.
 target_volume_fraction = 0
 target_volume_fraction_tol = 0.1
-
 optimization_algorithm = 3
-# -------------------------------------------------------------
-# OPTIMIZATION / MODEL CONFIGURATION
-# -------------------------------------------------------------
-scale = 0.001
-density = 2700
-youngs_modulus = 6.9e10
-poisson_ratio = 0.33
-sed_value = 0.15
 
+sed_value = 0.003
 minimum_thickness = 0.001
 safety_factor_sed = 1.1
 remove_thin_tiles = false

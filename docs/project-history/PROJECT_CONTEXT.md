@@ -1,6 +1,6 @@
 # Project Context
 
-Last reviewed: 2026-10-27
+Last reviewed: 2026-11-20
 
 ## Purpose
 
@@ -19,7 +19,7 @@ thicknesses over repeated iterations.
 - `optimization_config_parser.c/.h`: the current text-file adapter that
   initializes, populates, validates, and releases `OptConfigStruct` inputs.
 - `legacy_fea.c/.h`: removable compatibility module containing the CalculiX
-  backend and the current hard-coded ANSYS INP analysis additions.
+  backend and the temporary configuration-driven ANSYS INP additions.
 - `opt_config.txt`: editable run, material, optimization, and path settings.
 
 The `t1` directory contains older comparison copies. It is not a substitute
@@ -57,6 +57,11 @@ or consecutive-body interfaces.
 
 `target_volume_fraction = 0` skips the initial volume-fitting loop; a positive
 fraction enables it. There is no separate target-volume enable flag.
+
+The temporary structural FEM adapter reads material properties, pressure, and
+support/load regions from `OptConfigStruct`. Regions are specified by a
+zero-based macro-body index and one of six parametric faces; support DOFs are
+fixed-translation flags in X/Y/Z order.
 
 ## Terminology
 

@@ -5,6 +5,10 @@
  * unit.  Delete this file and the include when CalculiX and temporary INP
  * augmentation are retired. */
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Runs one child process synchronously and returns its exit status.         *
+***************************************************************************/
 static int RunCommandLineBlocking(const char *CommandLine,
                                   const char *WorkingDir)
 {
@@ -38,6 +42,10 @@ static int RunCommandLineBlocking(const char *CommandLine,
 #endif
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Runs one child process synchronously with output redirected to a file.    *
+***************************************************************************/
 static int RunCommandLineBlockingToFile(const char *CommandLine,
                                         const char *WorkingDir,
                                         const char *LogFile)
@@ -92,9 +100,58 @@ static int RunCommandLineBlockingToFile(const char *CommandLine,
 #endif
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Returns the display name of one configured parametric face.              *
+***************************************************************************/
+static const char *OptFaceLabel(int Face)
+{
+    static const char *Labels[IRIT_OPT_FACE_COUNT] = {
+        "U-min", "U-max", "V-min", "V-max", "W-min", "W-max"
+    };
+
+    return Face >= 0 && Face < IRIT_OPT_FACE_COUNT ?
+        Labels[Face] : "invalid";
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tests whether a local tile lies on a selected face of its macro body.     *
+***************************************************************************/
+static CagdBType OptIsTileOnFace(const int TileIndices[3],
+                                 const int Counts[3],
+                                 int Face)
+{
+    int Axis = Face / 2;
+
+    if (Face < 0 || Face >= IRIT_OPT_FACE_COUNT)
+        return FALSE;
+    return Face % 2 ? TileIndices[Axis] == Counts[Axis] - 1
+                    : TileIndices[Axis] == 0;
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tests whether an undeformed unit-tile surface matches a parametric face.  *
+***************************************************************************/
+static CagdBType OptSurfaceMatchesFace(const IritCagdBBoxStruct *BBox,
+                                       int Face)
+{
+    int Axis = Face / 2;
+    CagdRType Coordinate = Face % 2 ? 1.0 : 0.0;
+
+    return Face >= 0 && Face < IRIT_OPT_FACE_COUNT &&
+        fabs(BBox -> Min[Axis] - Coordinate) <= IRIT_UEPS &&
+        fabs(BBox -> Max[Axis] - Coordinate) <= IRIT_UEPS;
+}
+
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tags configured SUPPORT and PRESSURE faces before geometry deformation.  *
+***************************************************************************/
 static void DefineINPFaceSelections(IritPrsrObjectStruct *Tile,
-                                    int Support, int SupportSide,
-                                    int Pressure)
+                                    int Support, int SupportFace,
+                                    int Pressure, int PressureFace)
 {
     int I;
     IritTrivTVStruct *TV;
@@ -105,7 +162,8 @@ static void DefineINPFaceSelections(IritPrsrObjectStruct *Tile,
         IritPrsrObjectStruct *Child;
 
         for (I = 0; (Child = IritPrsrListObjectGet(Tile, I)) != NULL; ++I)
-            DefineINPFaceSelections(Child, Support, SupportSide, Pressure);
+            DefineINPFaceSelections(Child, Support, SupportFace,
+                                    Pressure, PressureFace);
     }
     else if (IRIT_PRSR_IS_TRIVAR_OBJ(Tile)) {
         for (TV = Tile -> U.Trivars; TV != NULL; TV = TV -> Pnext) {
@@ -118,26 +176,10 @@ static void DefineINPFaceSelections(IritPrsrObjectStruct *Tile,
                 const char *Name = NULL;
 
                 IritCagdSrfBBox(Faces[I], &BBox);
-                if (Support) {
-                    CagdBType IsSupportFace = FALSE;
-
-                    if (SupportSide == OPT_SUPPORT_SIDE_VMIN) {
-                        IsSupportFace =
-                            fabs(BBox.Min[1]) <= IRIT_UEPS &&
-                            fabs(BBox.Max[1]) <= IRIT_UEPS;
-                    }
-                    else if (SupportSide == OPT_SUPPORT_SIDE_VMAX) {
-                        IsSupportFace =
-                            fabs(BBox.Min[1] - 1.0) <= IRIT_UEPS &&
-                            fabs(BBox.Max[1] - 1.0) <= IRIT_UEPS;
-                    }
-                    if (IsSupportFace)
-                        Name = "SUPPORT";
-                }
-
-                if (Name == NULL &&
-                    Pressure && fabs(BBox.Min[2]) <= IRIT_UEPS &&
-                    fabs(BBox.Max[2]) <= IRIT_UEPS)
+                if (Support && OptSurfaceMatchesFace(&BBox, SupportFace))
+                    Name = "SUPPORT";
+                if (Name == NULL && Pressure &&
+                    OptSurfaceMatchesFace(&BBox, PressureFace))
                     Name = "PRESSURE";
                 if (Name != NULL)
                     sprintf(Bndry + strlen(Bndry), "%s%d::%s",
@@ -165,11 +207,10 @@ static int RunSimulation(OptWorkflowStateStruct *Opt)
 {
     switch (Opt -> Config.SimulationType) {
         case 1:
-            /* Winglet analysis definition.  To return to the cantilever test,
-             * replace the call below with AddAnsysAnalysisDefinition(Opt). */
-            if (!AddAnsysAnalysisDefinitionWinglet(Opt)) {
+            if (!AddAnsysStructuralDefinition(Opt)) {
                 fprintf(stderr,
-                    "Failed to add ANSYS winglet analysis definition to INP.\n");
+                    "Failed to add configured ANSYS analysis definition "
+                    "to INP.\n");
                 return FALSE;
             }
             return RunAnsysBatch(Opt);
@@ -184,355 +225,9 @@ static int RunSimulation(OptWorkflowStateStruct *Opt)
 }
 
 /***************************************************************************
-* DESCRIPTION:
-*   Adds an ANSYS External-Model-compatible ABAQUS analysis definition
-*   to the IRIT-generated INP file.
-*
-*   The original IRIT mesh is preserved.  The function adds:
-*       - FIXED node set
-*       - LOADED node set
-*       - Material definition
-*       - Material assignment to EL-ALL
-*       - Boundary conditions
-*       - Nodal force
-*       - One analysis/load step
-*
-*   The generated INP remains an ABAQUS-format INP that can be imported
-*   through ANSYS Workbench External Model.
-*
-* RETURN VALUE:
-*   TRUE on success, FALSE on failure.
-***************************************************************************/
-static int AddAnsysAnalysisDefinition(OptWorkflowStateStruct* Opt)
-{
-    const CagdRType TotalLoadY = -1000.0;  /* Total load [N]. */
-
-    char TempInp[OPT_MAX_PATH];
-    char Line[OPT_MAX_LINE];
-
-    FILE* Src = NULL;
-    FILE* Dst = NULL;
-
-    CagdRType MinZ = 1.0e300;
-    CagdRType MaxZ = -1.0e300;
-    CagdRType ZTolerance;
-
-    int FixedCount = 0;
-    int LoadedCount = 0;
-
-    int I;
-    int N;
-
-    if (Opt == NULL)
-        return FALSE;
-
-    if (!Opt->Lattice.FEMTopologyBound ||
-        Opt->FEM.NodeCount <= 0) {
-        fprintf(stderr,
-            "ANSYS INP: FEM topology is unavailable.\n");
-        return FALSE;
-    }
-
-    /***********************************************************************
-     * Determine model Z limits.
-     ***********************************************************************/
-    for (I = 0; I < Opt->FEM.NodeCount; ++I) {
-        OptNodeStruct* Node = &Opt->FEM.Nodes[I];
-
-        MinZ = IRIT_MIN(MinZ, Node->Z);
-        MaxZ = IRIT_MAX(MaxZ, Node->Z);
-    }
-
-    ZTolerance =
-        IRIT_MAX(1.0, fabs(MaxZ - MinZ)) * 1.0e-9;
-
-    /***********************************************************************
-     * Count support and loaded nodes.
-     *
-     * Same physical definition currently used by the CalculiX solver:
-     *
-     *   FIXED  = minimum-Z face.
-     *
-     *   LOADED = maximum-Z face,
-     *            restricted to -0.015 < Y < 0.015.
-     ***********************************************************************/
-    for (I = 0; I < Opt->FEM.NodeCount; ++I) {
-        OptNodeStruct* Node = &Opt->FEM.Nodes[I];
-
-        if (fabs(Node->Z - MinZ) <= ZTolerance)
-            ++FixedCount;
-
-        if (fabs(Node->Z - MaxZ) <= ZTolerance &&
-            Node->Y > -0.015 &&
-            Node->Y < 0.015)
-            ++LoadedCount;
-    }
-
-    if (FixedCount == 0 || LoadedCount == 0) {
-        fprintf(stderr,
-            "ANSYS INP: failed to select BC nodes "
-            "(fixed=%d, loaded=%d).\n",
-            FixedCount,
-            LoadedCount);
-
-        return FALSE;
-    }
-
-    /***********************************************************************
-     * Rewrite through a temporary file.
-     *
-     * This also makes the function safe if it is accidentally called twice:
-     * an existing ANSYS block is removed before a new one is written.
-     ***********************************************************************/
-    snprintf(TempInp,
-        sizeof(TempInp),
-        "%s.ansys.tmp",
-        Opt->Config.InpFile);
-
-    Src = fopen(Opt->Config.InpFile, "r");
-    if (Src == NULL) {
-        fprintf(stderr,
-            "ANSYS INP: cannot open input file: %s\n",
-            Opt->Config.InpFile);
-        return FALSE;
-    }
-
-    Dst = fopen(TempInp, "w");
-    if (Dst == NULL) {
-        fprintf(stderr,
-            "ANSYS INP: cannot create temporary file: %s\n",
-            TempInp);
-        fclose(Src);
-        remove(TempInp);
-        return FALSE;
-    }
-
-    /***********************************************************************
-     * Copy original IRIT INP.
-     ***********************************************************************/
-    while (fgets(Line, sizeof(Line), Src) != NULL) {
-        char Copy[OPT_MAX_LINE];
-        char* P;
-
-        snprintf(Copy, sizeof(Copy), "%s", Line);
-        P = OptTrim(Copy);
-
-        /*
-         * If the file already contains our block, discard the old block.
-         * The block is always appended at the end of the file.
-         */
-        if (strcmp(P,
-            "** BEGIN ADDED ANSYS ANALYSIS DEFINITION") == 0)
-            break;
-
-        fputs(Line, Dst);
-    }
-
-    fclose(Src);
-    Src = NULL;
-
-    /***********************************************************************
-     * Begin ANSYS-compatible ABAQUS analysis data.
-     ***********************************************************************/
-    fprintf(Dst,
-        "\n"
-        "** BEGIN ADDED ANSYS ANALYSIS DEFINITION\n");
-
-    fprintf(Dst,
-        "** Generated automatically for ANSYS External Model\n");
-
-    fprintf(Dst,
-        "** FIXED: minimum Z\n"
-        "** LOADED: maximum Z and -0.015 < Y < 0.015\n");
-
-    /***********************************************************************
-     * Fixed node set.
-     ***********************************************************************/
-    fprintf(Dst, "*NSET, NSET=FIXED\n");
-
-    N = 0;
-
-    for (I = 0; I < Opt->FEM.NodeCount; ++I) {
-        OptNodeStruct* Node = &Opt->FEM.Nodes[I];
-
-        if (fabs(Node->Z - MinZ) <= ZTolerance) {
-
-            ++N;
-
-            fprintf(Dst,
-                "%d%s",
-                Node->Id,
-                (N % 16 == 0 || N == FixedCount)
-                ? "\n"
-                : ",");
-        }
-    }
-
-    /***********************************************************************
-     * Loaded node set.
-     ***********************************************************************/
-    fprintf(Dst, "*NSET, NSET=LOADED\n");
-
-    N = 0;
-
-    for (I = 0; I < Opt->FEM.NodeCount; ++I) {
-        OptNodeStruct* Node = &Opt->FEM.Nodes[I];
-
-        if (fabs(Node->Z - MaxZ) <= ZTolerance &&
-            Node->Y > -0.015 &&
-            Node->Y < 0.015) {
-
-            ++N;
-
-            fprintf(Dst,
-                "%d%s",
-                Node->Id,
-                (N % 16 == 0 || N == LoadedCount)
-                ? "\n"
-                : ",");
-        }
-    }
-
-    /***********************************************************************
-     * Material.
-     ***********************************************************************/
-    fprintf(Dst,
-        "*MATERIAL, NAME=OPT_MATERIAL\n");
-
-    fprintf(Dst,
-        "*ELASTIC\n"
-        "%.17g, %.17g\n",
-        (double)Opt->Config.YoungsModulus,
-        (double)Opt->Config.PoissonRatio);
-
-    fprintf(Dst,
-        "*DENSITY\n"
-        "%.17g\n",
-        (double)Opt->Config.Density);
-
-    /***********************************************************************
-     * Assign material to all IRIT elements.
-     *
-     * IRIT already creates:
-     *
-     *   *ELEMENT, TYPE=C3D8, ELSET=EL-ALL
-     ***********************************************************************/
-    fprintf(Dst,
-        "*SOLID SECTION, ELSET=EL-ALL, MATERIAL=OPT_MATERIAL\n");
-
-    /*
-     * Standard ABAQUS solid-section data line.
-     */
-    fprintf(Dst, ",\n");
-
-    /***********************************************************************
-     * Analysis/load step.
-     *
-     * DO NOT add "*STATIC, SOLVER=SPOOLES".
-     *
-     * ANSYS External Model recognizes STEP and imports the BC/load data;
-     * the actual analysis environment is your Workbench Static Structural
-     * system.
-     ***********************************************************************/
-    fprintf(Dst, "*STEP\n");
-
-    /***********************************************************************
-     * Fully constrain the minimum-Z nodes:
-     *
-     * DOF 1 = X
-     * DOF 2 = Y
-     * DOF 3 = Z
-     ***********************************************************************/
-    fprintf(Dst,
-        "*BOUNDARY\n"
-        "FIXED, 1, 3, 0.0\n");
-
-    /***********************************************************************
-     * Apply total Y load, distributed equally over all loaded nodes.
-     ***********************************************************************/
-    fprintf(Dst,
-        "*CLOAD\n"
-        "LOADED, 2, %.17g\n",
-        (double)(TotalLoadY /
-            (CagdRType)LoadedCount));
-
-    fprintf(Dst, "*END STEP\n");
-
-    fprintf(Dst,
-        "** END ADDED ANSYS ANALYSIS DEFINITION\n");
-
-    fclose(Dst);
-    Dst = NULL;
-
-    /***********************************************************************
-     * Replace original INP with completed INP.
-     ***********************************************************************/
-#ifdef _WIN32
-
-    if (!MoveFileExA(TempInp,
-        Opt->Config.InpFile,
-        MOVEFILE_REPLACE_EXISTING |
-        MOVEFILE_COPY_ALLOWED)) {
-
-        fprintf(stderr,
-            "ANSYS INP: failed to replace original INP.\n");
-
-        remove(TempInp);
-        return FALSE;
-    }
-
-#else
-
-    if (rename(TempInp,
-        Opt->Config.InpFile) != 0) {
-
-        fprintf(stderr,
-            "ANSYS INP: failed to replace original INP.\n");
-
-        remove(TempInp);
-        return FALSE;
-    }
-
-#endif
-
-    fprintf(stderr,
-        "ANSYS analysis definition added to INP "
-        "(fixed=%d, loaded=%d, total Fy=%.6g N).\n",
-        FixedCount,
-        LoadedCount,
-        (double)TotalLoadY);
-
-    return TRUE;
-}
-
-/***************************************************************************
-* DESCRIPTION:
-*   Adds the hard-coded ANSYS External-Model analysis definition used by
-*   the winglet test case to the IRIT-generated ABAQUS-format INP file.
-*
-*   The IRIT geometry callback is responsible for exporting the named
-*   selections used here:
-*
-*       SUPPORT  - root boundary at the selected V-min face.
-*       PRESSURE - loaded cover at the selected W-min face.
-*
-*   This function deliberately does not reconstruct those selections from
-*   deformed XYZ coordinates.  It only references the UVW-based selections
-*   already embedded in the INP by DefineINPFaceSelections().
-*
-*   Hard-coded winglet test properties:
-*       PA 2200 elastic modulus     = 1.8 GPa
-*       Poisson ratio               = 0.39
-*       Density                     = 930 kg/m^3
-*       Reference strength          = 45 MPa (comment only; linear solve)
-*       Applied normal pressure     = 10 kPa
-*
-*   The pressure value is a test value and can be changed at the top of
-*   this function.  Positive ABAQUS pressure acts normal to the selected
-*   surface according to its surface orientation.
-*
-* RETURN VALUE:
-*   TRUE on success, FALSE on failure.
+* DESCRIPTION:                                                             *
+* Closes temporary INP resources, releases one allocation, and removes the  *
+* incomplete temporary file.                                               *
 ***************************************************************************/
 static int AbortTemporaryInp(FILE *Src, FILE *Dst, void *Allocation,
                              const char *TempInp)
@@ -547,15 +242,23 @@ static int AbortTemporaryInp(FILE *Src, FILE *Dst, void *Allocation,
     return FALSE;
 }
 
-static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Adds the configured ANSYS External-Model structural definition to the     *
+* IRIT-generated ABAQUS-format INP. SUPPORT and PRESSURE are parametric      *
+* selections created before deformation; material, support DOFs, and load   *
+* magnitude come from OptConfigStruct.                                      *
+*                                                                          *
+* PARAMETERS:                                                              *
+*   Opt: Active optimization workflow state.                               *
+*                                                                          *
+* RETURN VALUE:                                                            *
+*   int: TRUE on success, FALSE on failure.                                *
+***************************************************************************/
+static int AddAnsysStructuralDefinition(OptWorkflowStateStruct *Opt)
 {
-    const CagdRType YoungsModulusPa = 1.8e9;
-    const CagdRType PoissonRatio = 0.39;
-    const CagdRType DensityKgM3 = 930.0;
-    const CagdRType ReferenceStrengthPa = 45.0e6;
-    const CagdRType PressurePa = 5.0e3;  /* 5kPa, 10 kPa test pressure. */
-    const char *SupportSideLabel =
-        OPT_SUPPORT_SIDE == OPT_SUPPORT_SIDE_VMAX ? "V-max" : "V-min";
+    const char *SupportSideLabel;
+    const char *PressureSideLabel;
     static const int C3D8FaceNodes[6][4] = {
         { 0, 1, 2, 3 },
         { 4, 7, 6, 5 },
@@ -579,6 +282,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
 
     if (Opt == NULL || OptIsBlank(Opt->Config.InpFile))
         return FALSE;
+    SupportSideLabel = OptFaceLabel(Opt -> Config.FemSupportFace);
+    PressureSideLabel = OptFaceLabel(Opt -> Config.FemPressureFace);
 
     /* Convert the exported SUPPORT element faces through the persistent
      * C3D8 connectivity, independently of skin thickness and XYZ shape. */
@@ -586,7 +291,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
         Opt->FEM.NodeCount <= 0 ||
         Opt->FEM.ElementCount <= 0) {
         fprintf(stderr,
-                "ANSYS winglet INP: FEM topology is unavailable.\n");
+                "ANSYS structural INP: FEM topology is unavailable.\n");
         return FALSE;
     }
 
@@ -594,19 +299,19 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                                          sizeof(int));
     if (SupportNodeIds == NULL) {
         fprintf(stderr,
-                "ANSYS winglet INP: failed to allocate SUPPORT node list.\n");
+                "ANSYS structural INP: failed to allocate SUPPORT node list.\n");
         return FALSE;
     }
 
     snprintf(TempInp,
              sizeof(TempInp),
-             "%s.ansys_winglet.tmp",
+             "%s.ansys_structural.tmp",
              Opt->Config.InpFile);
 
     Src = fopen(Opt->Config.InpFile, "r");
     if (Src == NULL) {
         fprintf(stderr,
-                "ANSYS winglet INP: cannot open input file: %s\n",
+                "ANSYS structural INP: cannot open input file: %s\n",
                 Opt->Config.InpFile);
         return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
@@ -614,7 +319,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
     Dst = fopen(TempInp, "w");
     if (Dst == NULL) {
         fprintf(stderr,
-                "ANSYS winglet INP: cannot create temporary file: %s\n",
+                "ANSYS structural INP: cannot create temporary file: %s\n",
                 TempInp);
         return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
@@ -628,7 +333,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
         snprintf(Copy, sizeof(Copy), "%s", Line);
         P = OptTrim(Copy);
 
-        if (strcmp(P, "** BEGIN ADDED ANSYS WINGLET ANALYSIS DEFINITION") == 0 ||
+        if (strcmp(P, "** BEGIN ADDED ANSYS STRUCTURAL ANALYSIS DEFINITION") == 0 ||
+            strcmp(P, "** BEGIN ADDED ANSYS WINGLET ANALYSIS DEFINITION") == 0 ||
             strcmp(P, "** BEGIN ADDED ANSYS ANALYSIS DEFINITION") == 0)
             break;
 
@@ -659,7 +365,7 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                 toupper((unsigned char) FacePrefix) != 'S' ||
                 FaceNumber < 1 || FaceNumber > 6) {
                 fprintf(stderr,
-                        "ANSYS winglet INP: invalid SUPPORT surface row: %s\n",
+                        "ANSYS structural INP: invalid SUPPORT surface row: %s\n",
                         P);
                 return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
             }
@@ -672,7 +378,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
             }
             if (Elem == NULL || Elem->NodeCount != OPT_C3D8_NODE_COUNT) {
                 fprintf(stderr,
-                        "ANSYS winglet INP: SUPPORT references unknown/non-C3D8 "
+                        "ANSYS structural INP: SUPPORT references "
+                        "unknown/non-C3D8 "
                         "element %d.\n",
                         ElementId);
                 return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
@@ -693,7 +400,8 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                 if (!AlreadyPresent) {
                     if (SupportNodeCount >= Opt->FEM.NodeCount) {
                         fprintf(stderr,
-                                "ANSYS winglet INP: SUPPORT node list overflow.\n");
+                                "ANSYS structural INP: SUPPORT node list "
+                                "overflow.\n");
                         return AbortTemporaryInp(Src, Dst, SupportNodeIds,
                                                  TempInp);
                     }
@@ -710,34 +418,34 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
 
     if (!HasSupportSurface || SupportFaceCount <= 0 || SupportNodeCount <= 0) {
         fprintf(stderr,
-                "ANSYS winglet INP: SUPPORT has no usable C3D8 faces. "
+                "ANSYS structural INP: SUPPORT has no usable C3D8 faces. "
                 "Writing the material without a clamp.\n");
     }
 
     if (!HasPressureSurface) {
         fprintf(stderr,
-                "ANSYS winglet INP: named surface PRESSURE was not found.\n"
+                "ANSYS structural INP: named surface PRESSURE was not found.\n"
                 "Check DefineINPFaceSelections() and the exported INP.\n");
         return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 
-    fprintf(Dst, "\n** BEGIN ADDED ANSYS WINGLET ANALYSIS DEFINITION\n");
+    fprintf(Dst, "\n** BEGIN ADDED ANSYS STRUCTURAL ANALYSIS DEFINITION\n");
     fprintf(Dst,
-            "** Winglet test: SUPPORT=%s of body %d, PRESSURE=W-min\n",
+            "** Structural analysis: SUPPORT=%s of body %d, "
+            "PRESSURE=%s of body %d\n",
             SupportSideLabel,
-            OPT_SUPPORT_BODY_INDEX);
+            Opt -> Config.FemSupportBodyIndex,
+            PressureSideLabel,
+            Opt -> Config.FemPressureBodyIndex);
     fprintf(Dst,
             "** SUPPORT_NODES derived from %d exported SUPPORT C3D8 faces "
             "(%d unique nodes)\n",
             SupportFaceCount,
             SupportNodeCount);
-    fprintf(Dst, "** Material: EOS PA 2200 / Nylon 12 test definition\n");
-    fprintf(Dst,
-            "** Reference strength for post-processing only: %.17g Pa\n",
-            (double) ReferenceStrengthPa);
+    fprintf(Dst, "** Material properties supplied by optimization config\n");
     fprintf(Dst,
             "** Applied normal pressure: %.17g Pa\n",
-            (double) PressurePa);
+            (double) Opt -> Config.FemPressurePa);
 
     if (SupportNodeCount > 0) {
         fprintf(Dst, "*NSET, NSET=SUPPORT_NODES\n");
@@ -751,31 +459,31 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
         }
     }
 
-    /* Linear-elastic PA 2200 material used by the static winglet test. */
-    fprintf(Dst, "*MATERIAL, NAME=NYLON2200\n");
+    fprintf(Dst, "*MATERIAL, NAME=OPT_MATERIAL\n");
     fprintf(Dst,
             "*ELASTIC\n"
             "%.17g, %.17g\n",
-            (double) YoungsModulusPa,
-            (double) PoissonRatio);
+            (double) Opt -> Config.YoungsModulus,
+            (double) Opt -> Config.PoissonRatio);
     fprintf(Dst,
             "*DENSITY\n"
             "%.17g\n",
-            (double) DensityKgM3);
+            (double) Opt -> Config.Density);
 
     /* IRIT exports every C3D8 element into EL-ALL. */
     fprintf(Dst,
-            "*SOLID SECTION, ELSET=EL-ALL, MATERIAL=NYLON2200\n");
+            "*SOLID SECTION, ELSET=EL-ALL, MATERIAL=OPT_MATERIAL\n");
     fprintf(Dst, ",\n");
 
     /* ANSYS External Model reads the first ABAQUS load step. */
     fprintf(Dst, "*STEP\n");
 
-    /* Fully clamp all nodes belonging to the selected SUPPORT faces. */
     if (SupportNodeCount > 0) {
-        fprintf(Dst,
-                "*BOUNDARY\n"
-                "SUPPORT_NODES, 1, 3, 0.0\n");
+        fprintf(Dst, "*BOUNDARY\n");
+        for (I = 0; I < 3; ++I) {
+            if (Opt -> Config.FemSupportDofs[I])
+                fprintf(Dst, "SUPPORT_NODES, %d, %d, 0.0\n", I + 1, I + 1);
+        }
     }
 
     /* Apply a true surface-normal pressure to the exported PRESSURE surface.
@@ -783,10 +491,10 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
     fprintf(Dst,
             "*DSLOAD\n"
             "PRESSURE, P, %.17g\n",
-            (double) PressurePa);
+            (double) Opt -> Config.FemPressurePa);
 
     fprintf(Dst, "*END STEP\n");
-    fprintf(Dst, "** END ADDED ANSYS WINGLET ANALYSIS DEFINITION\n");
+    fprintf(Dst, "** END ADDED ANSYS STRUCTURAL ANALYSIS DEFINITION\n");
 
     fclose(Dst);
     Dst = NULL;
@@ -797,27 +505,30 @@ static int AddAnsysAnalysisDefinitionWinglet(OptWorkflowStateStruct* Opt)
                      MOVEFILE_REPLACE_EXISTING |
                      MOVEFILE_COPY_ALLOWED)) {
         fprintf(stderr,
-                "ANSYS winglet INP: failed to replace original INP.\n");
+                "ANSYS structural INP: failed to replace original INP.\n");
         return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 #else
     if (rename(TempInp, Opt->Config.InpFile) != 0) {
         fprintf(stderr,
-                "ANSYS winglet INP: failed to replace original INP.\n");
+                "ANSYS structural INP: failed to replace original INP.\n");
         return AbortTemporaryInp(Src, Dst, SupportNodeIds, TempInp);
     }
 #endif
 
     fprintf(stderr,
-            "ANSYS winglet analysis definition added: "
-            "support=body%d/%s, support_faces=%d, support_nodes=%d, "
-            "PA2200 E=%.6g GPa, pressure=%.6g kPa.\n",
-            OPT_SUPPORT_BODY_INDEX,
+            "ANSYS structural definition added: "
+            "support=body%d/%s, pressure=body%d/%s, "
+            "support_faces=%d, support_nodes=%d, "
+            "E=%.6g GPa, pressure=%.6g kPa.\n",
+            Opt -> Config.FemSupportBodyIndex,
             SupportSideLabel,
+            Opt -> Config.FemPressureBodyIndex,
+            PressureSideLabel,
             SupportFaceCount,
             SupportNodeCount,
-            (double) (YoungsModulusPa * 1.0e-9),
-            (double) (PressurePa * 1.0e-3));
+            (double) (Opt -> Config.YoungsModulus * 1.0e-9),
+            (double) (Opt -> Config.FemPressurePa * 1.0e-3));
 
     IritFree(SupportNodeIds);
     return TRUE;
@@ -850,16 +561,7 @@ static int RunAnsysBatch(OptWorkflowStateStruct *Opt)
 
 /***************************************************************************
 * DESCRIPTION:                                                             *
-*   Runs a child process synchronously and redirects stdout and stderr to   *
-* a fresh log file.                                                        *
-*                                                                          *
-* PARAMETERS:                                                              *
-*   CommandLine: Command line to execute.                                  *
-*   WorkingDir: Working directory of the child process.                    *
-*   LogFile:    File that receives stdout and stderr.                      *
-*                                                                          *
-* RETURN VALUE:                                                            *
-*   int: TRUE if the child process exits successfully, FALSE otherwise.    *
+* Closes CalculiX files, releases result arrays, and returns Result.         *
 ***************************************************************************/
 static int FinishCalculixBatch(FILE *Src, FILE *Dst, FILE *Dat, FILE *Sed,
                                FILE *VolumeOut, FILE *DesignOut,
@@ -889,6 +591,11 @@ static int FinishCalculixBatch(FILE *Src, FILE *Dst, FILE *Dat, FILE *Sed,
     return Result;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Adds the legacy CalculiX analysis block, runs CalculiX, and converts its   *
+* results into the optimizer's SED, volume, and design-parameter files.     *
+***************************************************************************/
 static int RunCalculixBatch(OptWorkflowStateStruct *Opt)
 {
     enum {

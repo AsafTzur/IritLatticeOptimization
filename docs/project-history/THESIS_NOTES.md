@@ -119,6 +119,15 @@ skin volume is separated from evolving lattice volume for the MMA target. This
 method is compile-verified but still needs a complete skinned solver run and
 evidence that the intended skin/lattice interface transfers load correctly.
 
+## Configuration-driven structural boundary definitions
+
+Implementation update, 2026-11-19: the temporary ANSYS adapter now selects
+support and pressure surfaces before deformation using macro-body identity and
+parametric U/V/W boundary identity. Material constants, pressure, and fixed
+translational DOFs are configuration inputs. This avoids reconstructing
+regions from deformed Cartesian coordinates, but generated-INP and solver
+validation remain outstanding.
+
 ## Evidence still needed
 
 - Reproducible build command and compiler/linker configuration.

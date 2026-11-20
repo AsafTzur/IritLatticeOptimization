@@ -3,6 +3,58 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-20 — Remove superseded FEM proposal files
+
+Removed `inp_fem_params.h`, `InpFEMParams_examples.txt`, and
+`PASSIVE_SKIN_REPAIR_SUMMARY.md` from the active tree. The implemented flat
+`OptConfigStruct` and configuration-driven compatibility adapter are now the
+active definitions; durable implementation history remains under
+`docs/project-history/` and in Git history.
+
+## 2026-11-20 — Remove stale comments and unused ANSYS writer
+
+Purpose: restore accurate function documentation after the solver and
+configuration refactors and keep the active C sources aligned with the local
+IRIT comment style.
+
+Changes:
+
+- Removed the unused Cartesian cantilever ANSYS INP writer and its declaration.
+- Renamed the active writer from its obsolete Winglet-specific name to
+  `AddAnsysStructuralDefinition` and updated diagnostics and INP block markers.
+- Removed orphaned configuration-parser and lattice-count comment blocks from
+  `test.c`.
+- Corrected the comment attached to CalculiX cleanup, documented previously
+  undocumented ownership/topology helpers, and added parser-helper comments.
+- Renamed the general face-count constant so it no longer implies skin-only
+  use, and made fixed real-array parsing require the documented brackets.
+
+Verification:
+
+- Visual C++ and whitespace results are recorded in the current handoff.
+
+## 2026-11-19 — Read active structural FEM definitions from configuration
+
+Purpose: remove Winglet-specific material, support, and pressure constants
+from the active ANSYS INP augmentation path.
+
+Changes:
+
+- Added configurable zero-based support and pressure body indices, six-way
+  parametric face selections, fixed translational DOFs, and pressure in Pa.
+- Generalized pre-deformation SUPPORT/PRESSURE tagging from V/W-specific logic
+  to U-min/U-max/V-min/V-max/W-min/W-max selections.
+- Changed the ANSYS writer to use configured Young's modulus, Poisson ratio,
+  density, pressure, and support DOFs.
+- Added validation for FEM values and for body indices after loading the macro
+  shape's actual trivariate count.
+
+Verification:
+
+- Visual C++ 2022 compiled `test.c` and `optimization_config_parser.c` in x64
+  C mode with `/W4`; only the existing IRIT nameless-union warnings appeared.
+- No generated-INP or ANSYS runtime validation was performed.
+
 ## 2026-11-19 — Export Winglet material when SUPPORT is missing
 
 - In `legacy_fea.c`, continue writing the Winglet material and solid section

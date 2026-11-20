@@ -5,15 +5,15 @@
 
 #define IRIT_OPT_MAX_PATH 1024
 #define IRIT_OPT_MAX_NAME 128
-#define IRIT_OPT_SKIN_FACE_COUNT 6
+#define IRIT_OPT_FACE_COUNT 6
 
-enum OptSkinFaceIndex {
-    OPT_SKIN_U_MIN = 0,
-    OPT_SKIN_U_MAX = 1,
-    OPT_SKIN_V_MIN = 2,
-    OPT_SKIN_V_MAX = 3,
-    OPT_SKIN_W_MIN = 4,
-    OPT_SKIN_W_MAX = 5
+enum OptParametricFace {
+    OPT_FACE_U_MIN = 0,
+    OPT_FACE_U_MAX = 1,
+    OPT_FACE_V_MIN = 2,
+    OPT_FACE_V_MAX = 3,
+    OPT_FACE_W_MIN = 4,
+    OPT_FACE_W_MAX = 5
 };
 
 typedef struct OptConfigStruct {
@@ -21,7 +21,13 @@ typedef struct OptConfigStruct {
     int SimulationType;
     int LatticeType;
     /* U-min, U-max, V-min, V-max, W-min, W-max; zero disables a face. */
-    CagdRType SkinFaceThickness[IRIT_OPT_SKIN_FACE_COUNT];
+    CagdRType SkinFaceThickness[IRIT_OPT_FACE_COUNT];
+    int FemSupportBodyIndex;
+    int FemSupportFace;
+    CagdBType FemSupportDofs[3];
+    int FemPressureBodyIndex;
+    int FemPressureFace;
+    CagdRType FemPressurePa;
     int LatticeCountU, LatticeCountV, LatticeCountW;
     int *LatticeCountLists[3];
     int LatticeCountListLengths[3];

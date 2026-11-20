@@ -63,24 +63,6 @@
 #define OPT_LEGACY_MESH_TYPE    1
 #define OPT_SKIN_REFINE_LEVEL   4
 
-/* Winglet support selection.
- *
- * OPT_SUPPORT_BODY_INDEX chooses which macro trivariate/body is clamped.
- * Bodies are zero based: 0 = first body, 1 = second body, ...
- *
- * OPT_SUPPORT_SIDE chooses the parametric V boundary of that body.
- * VMIN selects tile row V=0 and the local V=0 face.
- * VMAX selects the last V tile row and the local V=1 face. */
-#define OPT_SUPPORT_SIDE_VMIN   0
-#define OPT_SUPPORT_SIDE_VMAX   1
-#define OPT_SUPPORT_BODY_INDEX  0
-#define OPT_SUPPORT_SIDE        OPT_SUPPORT_SIDE_VMAX
-
-#if OPT_SUPPORT_SIDE != OPT_SUPPORT_SIDE_VMIN && \
-    OPT_SUPPORT_SIDE != OPT_SUPPORT_SIDE_VMAX
-#   error OPT_SUPPORT_SIDE must be OPT_SUPPORT_SIDE_VMIN or OPT_SUPPORT_SIDE_VMAX
-#endif
-
 /***************************************************************************
 *                        Input File Structures.                            *
 ***************************************************************************/
@@ -341,6 +323,10 @@ static int BuildNeighbourGroupsB(OptWorkflowStateStruct *Opt,
                                  const CagdRType Local[][3],
                                  int LocalCount,
                                  int LDefOffset);
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Appends one owned group of mutually matched subtile identifiers.          *
+***************************************************************************/
 static int AppendNeighbourGroup(OptWorkflowStateStruct *Opt,
                                 const int *SubTileIds,
                                 int Count);
@@ -2004,6 +1990,10 @@ static int AppendNeighbourGroup(OptWorkflowStateStruct *Opt,
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Replaces every neighbour group's thicknesses with their group average.    *
+***************************************************************************/
 static void ApplyNeighbourMatching(OptWorkflowStateStruct *Opt)
 {
     int G, I;
@@ -2175,6 +2165,10 @@ static CagdRType ComputeObjVol(IritPrsrObjectStruct *PObj)
     return Vol;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Computes the volume of geometry carrying the requested ownership tag.     *
+***************************************************************************/
 static CagdRType ComputeOwnedObjVol(IritPrsrObjectStruct *PObj,
                                     OptElementOwnerType OwnerType)
 {
@@ -2477,7 +2471,7 @@ static IritPrsrObjectStruct *PreProcessTile(
 
     switch (Opt -> Legacy.LType) {
         case 0: {
-            CagdRType FaceSkin[IRIT_OPT_SKIN_FACE_COUNT][4] = { { 0.0 } };
+            CagdRType FaceSkin[IRIT_OPT_FACE_COUNT][4] = { { 0.0 } };
             CagdBType HasSkin = FALSE;
             int GlobalTile[3];
             int Face, Corner;
@@ -2485,7 +2479,7 @@ static IritPrsrObjectStruct *PreProcessTile(
             for (Face = 0; Face < 3; ++Face)
                 GlobalTile[Face] = LclData -> GridOrigin[Face] +
                                    CBData -> TileIdxs[Face];
-            for (Face = 0; Face < IRIT_OPT_SKIN_FACE_COUNT; ++Face) {
+            for (Face = 0; Face < IRIT_OPT_FACE_COUNT; ++Face) {
                 int Axis = Face / 2;
                 int IsMaximumFace = Face % 2;
                 int AxisCount = Axis == 0 ? Opt -> Config.LatticeCountU :
@@ -2508,27 +2502,27 @@ static IritPrsrObjectStruct *PreProcessTile(
             if (!PreProcessTile1FaceParam(
                                       &WMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 0][1],
-                                      Circle, FaceSkin[OPT_SKIN_W_MAX]) ||
+                                      Circle, FaceSkin[OPT_FACE_W_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &WMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 1][1],
-                                      Circle, FaceSkin[OPT_SKIN_W_MIN]) ||
+                                      Circle, FaceSkin[OPT_FACE_W_MIN]) ||
                 !PreProcessTile1FaceParam(
                                       &VMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 2][1],
-                                      Circle, FaceSkin[OPT_SKIN_V_MAX]) ||
+                                      Circle, FaceSkin[OPT_FACE_V_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &VMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 3][1],
-                                      Circle, FaceSkin[OPT_SKIN_V_MIN]) ||
+                                      Circle, FaceSkin[OPT_FACE_V_MIN]) ||
                 !PreProcessTile1FaceParam(
                                       &UMaxPrms,
                                       Opt -> Legacy.Data[BaseIndex + 4][1],
-                                      Circle, FaceSkin[OPT_SKIN_U_MAX]) ||
+                                      Circle, FaceSkin[OPT_FACE_U_MAX]) ||
                 !PreProcessTile1FaceParam(
                                       &UMinPrms,
                                       Opt -> Legacy.Data[BaseIndex + 5][1],
-                                      Circle, FaceSkin[OPT_SKIN_U_MIN])) {
+                                      Circle, FaceSkin[OPT_FACE_U_MIN])) {
                 return NULL;
             }
 
@@ -2652,24 +2646,23 @@ static IritPrsrObjectStruct *PreProcessTile(
             break;
     }
 
-    /* Select SUPPORT parametrically before deformation.  PRESSURE remains
-     * W-min of body 1 for the winglet test. */
+    /* Select configured FEM faces parametrically before deformation. */
     {
-        int SupportTile = FALSE;
-
-        if (LclData -> BodyIndex == OPT_SUPPORT_BODY_INDEX) {
-            if (OPT_SUPPORT_SIDE == OPT_SUPPORT_SIDE_VMIN)
-                SupportTile = CBData -> TileIdxs[1] == 0;
-            else
-                SupportTile =
-                    CBData -> TileIdxs[1] == LclData -> Counts[1] - 1;
-        }
+        int SupportTile =
+            LclData -> BodyIndex == Opt -> Config.FemSupportBodyIndex &&
+            OptIsTileOnFace(CBData -> TileIdxs, LclData -> Counts,
+                            Opt -> Config.FemSupportFace);
+        int PressureTile =
+            LclData -> BodyIndex == Opt -> Config.FemPressureBodyIndex &&
+            OptIsTileOnFace(CBData -> TileIdxs, LclData -> Counts,
+                            Opt -> Config.FemPressureFace);
 
         DefineINPFaceSelections(
             Tile,
             SupportTile,
-            OPT_SUPPORT_SIDE,
-            LclData -> BodyIndex == 1 && CBData -> TileIdxs[2] == 0);
+            Opt -> Config.FemSupportFace,
+            PressureTile,
+            Opt -> Config.FemPressureFace);
     }
     if (Tile != NULL &&
         !TagTileMeshOwnership(Tile, Index, Opt -> L,
@@ -2685,6 +2678,10 @@ static IritPrsrObjectStruct *PreProcessTile(
     return Tile;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tests whether a unit-tile trivariate represents a full boundary skin.     *
+***************************************************************************/
 static CagdBType IsFullFaceSkinTV(const IritTrivTVStruct *TV,
                                   CagdRType SkinThickness)
 {
@@ -2715,6 +2712,10 @@ static CagdBType IsFullFaceSkinTV(const IritTrivTVStruct *TV,
     return FullAxes == 2 && ThinBoundaryAxis;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Tags lattice and passive-skin trivariates with persistent mesh ownership. *
+***************************************************************************/
 static int TagTileMeshOwnership(IritPrsrObjectStruct *Tile,
                                 int TileIndex,
                                 int ExpectedSubTiles,
@@ -2835,6 +2836,10 @@ static int FinishMicroStructures(IritMvarMVStruct *MV,
     return Result;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Generates, deforms, tags, scales, and exports all configured macro bodies. *
+***************************************************************************/
 static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
 {
     const int UseFFDTileAggregation = 0;
@@ -2993,6 +2998,10 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
     return FinishMicroStructures(MV, BodyMS, Scaled, MS, Ok);
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Counts exported trivariate patches carrying valid ownership metadata.     *
+***************************************************************************/
 static int CountMeshPatchOwners(const IritPrsrObjectStruct *Obj)
 {
     int Count = 0;
@@ -3015,6 +3024,10 @@ static int CountMeshPatchOwners(const IritPrsrObjectStruct *Obj)
     return Count;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Copies geometry ownership metadata into export-order patch records.       *
+***************************************************************************/
 static int FillMeshPatchOwners(const IritPrsrObjectStruct *Obj,
                                OptMeshPatchOwnerStruct *Owners,
                                int Capacity,
@@ -3060,6 +3073,10 @@ static int FillMeshPatchOwners(const IritPrsrObjectStruct *Obj,
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Rebuilds and validates the complete export-order patch ownership table.   *
+***************************************************************************/
 static int BuildMeshPatchOwners(OptWorkflowStateStruct *Opt,
                                 const IritPrsrObjectStruct *Geometry)
 {
@@ -3121,6 +3138,10 @@ static int BuildMeshPatchOwners(OptWorkflowStateStruct *Opt,
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Uniformly refines every trivariate in one generated tile.                 *
+***************************************************************************/
 static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile,
     int RefinementLevel)
 {
@@ -3172,6 +3193,10 @@ static int RefineTileTrivariatesUniformly(IritPrsrObjectStruct* Tile,
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Returns a new tile whose trivariates share a common polynomial degree.    *
+***************************************************************************/
 static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Tile)
 {
     const IritTrivTVStruct *OldTV;
@@ -3202,11 +3227,6 @@ static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Til
 *                   Geometry Adapter / Count Parsing                       *
 ***************************************************************************/
 
-/***************************************************************************
-* DESCRIPTION:                                                             *
-* Parses one or more positive integer values from a lattice-count line.    *
-* Each value supplies the local count for one macro body.                   *
-***************************************************************************/
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Loads every macro-shape trivariate and resolves their count lists into    *
@@ -3258,6 +3278,17 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
         return FALSE;
     }
     Opt -> DefMapCount = FoundCount;
+
+    if (Opt -> Config.FemSupportBodyIndex >= FoundCount ||
+        Opt -> Config.FemPressureBodyIndex >= FoundCount) {
+        fprintf(stderr,
+                "Configured FEM body is outside macro-shape range 0..%d "
+                "(support=%d, pressure=%d).\n",
+                FoundCount - 1,
+                Opt -> Config.FemSupportBodyIndex,
+                Opt -> Config.FemPressureBodyIndex);
+        return FALSE;
+    }
 
     for (D = 0; D < 3; ++D) {
         if (Opt -> Config.LatticeCountListLengths[D] != FoundCount) {
@@ -3755,6 +3786,10 @@ static int InitLatticeModel(OptWorkflowStateStruct *Opt)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Parses and binds the first exported mesh as persistent workflow topology. *
+***************************************************************************/
 static int InitializePersistentTopology(OptWorkflowStateStruct *Opt)
 {
     if (Opt -> Lattice.FEMTopologyBound)
@@ -3779,6 +3814,10 @@ static int InitializePersistentTopology(OptWorkflowStateStruct *Opt)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Binds lattice elements to subtiles and marks passive-skin elements.       *
+***************************************************************************/
 static int BindElementsToSubTiles(OptWorkflowStateStruct *Opt)
 {
     long long ExpectedElements;
@@ -3981,6 +4020,10 @@ static void FEMModelReset(OptFEMModelStruct *FEM)
     IRIT_ZAP_MEM(FEM, sizeof(*FEM));
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Appends one node to the dynamically sized finite-element model.           *
+***************************************************************************/
 static int FEMNodePush(OptFEMModelStruct *FEM, const OptNodeStruct *Node)
 {
     if (FEM -> NodeCount >= FEM -> NodeCapacity) {
@@ -3998,6 +4041,10 @@ static int FEMNodePush(OptFEMModelStruct *FEM, const OptNodeStruct *Node)
     return TRUE;
 }
 
+/***************************************************************************
+* DESCRIPTION:                                                             *
+* Appends one element to the dynamically sized finite-element model.        *
+***************************************************************************/
 static int FEMElementPush(OptFEMModelStruct *FEM,
                           const OptElementStruct *Elem)
 {
@@ -4151,29 +4198,6 @@ static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
     return TRUE;
 }
 
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Loads all run, optimization, and machine settings from one configuration   *
-* file.                                                                     *
-****************************************************************************/
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Reads a key-value configuration file and dispatches each parsed entry to   *
-* the supplied handler.                                                     *
-****************************************************************************/
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Maps one key from the unified configuration file into the run or fixed     *
-* configuration structure.                                                  *
-****************************************************************************/
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Parses a boolean configuration value.                                     *
-****************************************************************************/
-/****************************************************************************
-* DESCRIPTION:                                                              *
-* Verifies the unified configuration after it has been parsed.              *
-****************************************************************************/
 /***************************************************************************
 *                         File and Process Helpers                          *
 ***************************************************************************/

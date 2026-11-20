@@ -15,7 +15,38 @@ and section were also added directly to the inspected generated INP. `test.c`
 uses `HasSkin` to gate tile refinement. The staged whitespace check passed.
 No build or solver run was performed for these edits.
 
-Last updated: 2026-11-19
+Last updated: 2026-11-20
+
+## 2026-11-20 superseded proposal-file removal
+
+The standalone `inp_fem_params.h` proposal, its compact example text, and the
+old passive-skin repair summary were removed from the active tree in the
+version prepared for commit. Their earlier contents remain available in Git
+history; current configuration is defined by `opt_config.h` and loaded through
+`optimization_config_parser.c/.h`.
+
+## 2026-11-20 source-comment and compatibility cleanup
+
+Removed the unused old cantilever ANSYS writer, renamed the configured writer
+to `AddAnsysStructuralDefinition`, corrected stale Winglet diagnostics and
+misattached comments, and documented the previously undocumented parser,
+ownership, topology, and mesh-growth helpers. The general parametric-face
+count is now named `IRIT_OPT_FACE_COUNT`, and fixed real arrays require the
+documented bracket syntax. Visual C++ 2022 compiled `test.c` and
+`optimization_config_parser.c` in x64 C mode with `/W4`; only the existing
+IRIT nameless-union warnings appeared. `git diff --check` reported no
+whitespace errors.
+
+## 2026-11-19 configuration-driven FEM definitions
+
+The active ANSYS augmentation now reads `fem_support_body`,
+`fem_support_face`, `fem_support_dofs`, `fem_pressure_body`,
+`fem_pressure_face`, and `fem_pressure_pa` from `opt_config.txt`. Face values
+are `u_min`, `u_max`, `v_min`, `v_max`, `w_min`, or `w_max`; body indices are
+zero based. Existing `youngs_modulus`, `poisson_ratio`, and `density` now feed
+the exported material instead of being bypassed by Winglet constants. Direct
+x64 compilation succeeded with existing external-header warnings. No INP or
+ANSYS runtime was performed.
 
 ## 2026-11-19 target-volume flag removal
 
