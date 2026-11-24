@@ -1,5 +1,18 @@
 # Design Decisions
 
+## D-019 — Repair the merged finite-element mesh before publishing the INP
+
+Date: 2026-11-24
+
+Validate C3D8 Jacobian determinants on IRIT's merged FE mesh. Apply local
+coordinate corrections to shared nodes with tagged surface nodes fixed.
+Keep the existing connectivity and element ownership order.
+
+The IRIT export API returns a file, so the optimizer stages that file
+privately. It publishes the checked INP only after validation passes.
+Trivariate orientation checks alone can miss local foldovers in a sampled
+hex, and remeshing would invalidate persistent element-to-subtile mapping.
+
 ## D-018 — Configure active structural regions in parametric space
 
 Date: 2026-11-19

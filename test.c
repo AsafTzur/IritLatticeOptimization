@@ -373,7 +373,7 @@ static void OptWriteCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt);
 
 /* Simulation data. */
-static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath);
+static int ReadINP(OptFEMModelStruct *FEM, const char *INPPath);
 static int ReadSimulationData(const char *FileName,
                               OptScalarFieldStruct *Field);
 static CagdRType *ReadTileData(const OptWorkflowStateStruct *Opt,
@@ -2836,6 +2836,414 @@ static int FinishMicroStructures(IritMvarMVStruct *MV,
     return Result;
 }
 
+#define OPT_HEX_JACOBIAN_COEFFICIENTS 27
+#define OPT_HEX_REPAIR_CHECKS 35
+#define OPT_HEX_REPAIR_PASSES 220
+
+typedef struct OptHexRepairNodeStruct {
+    IrtPtType Point;
+    IrtVecType Correction;
+    int Locked, Movable, Changed, Contributions;
+} OptHexRepairNodeStruct;
+
+typedef struct OptHexJacobianSampleStruct {
+    double Derivative[OPT_C3D8_NODE_COUNT][3];
+} OptHexJacobianSampleStruct;
+
+static void HexShapeDerivatives(double U, double V, double W,
+                                OptHexJacobianSampleStruct *Sample)
+{
+    static const int Sign[OPT_C3D8_NODE_COUNT][3] = {
+        { -1, -1, -1 }, {  1, -1, -1 }, {  1,  1, -1 }, { -1,  1, -1 },
+        { -1, -1,  1 }, {  1, -1,  1 }, {  1,  1,  1 }, { -1,  1,  1 }
+    };
+    int I;
+
+    for (I = 0; I < OPT_C3D8_NODE_COUNT; ++I) {
+        double A = 1 + Sign[I][0] * U;
+        double B = 1 + Sign[I][1] * V;
+        double C = 1 + Sign[I][2] * W;
+
+        Sample -> Derivative[I][0] = 0.125 * Sign[I][0] * B * C;
+        Sample -> Derivative[I][1] = 0.125 * Sign[I][1] * A * C;
+        Sample -> Derivative[I][2] = 0.125 * Sign[I][2] * A * B;
+    }
+}
+
+static double HexJacobian(const OptHexRepairNodeStruct *Nodes,
+                          const OptElementStruct *Element,
+                          const OptHexJacobianSampleStruct *Sample,
+                          double Cofactor[3][3])
+{
+    double J[3][3] = { { 0 } };
+    const IrtRType *Origin = Nodes[Element -> NodeIds[0] - 1].Point;
+    int I, A, D;
+
+    for (I = 1; I < OPT_C3D8_NODE_COUNT; ++I) {
+        const IrtRType *P = Nodes[Element -> NodeIds[I] - 1].Point;
+
+        for (A = 0; A < 3; ++A)
+            for (D = 0; D < 3; ++D)
+                J[A][D] += Sample -> Derivative[I][A] * (P[D] - Origin[D]);
+    }
+    for (A = 0; A < 3; ++A) {
+        const double *B = J[(A + 1) % 3], *C = J[(A + 2) % 3];
+
+        for (D = 0; D < 3; ++D)
+            Cofactor[A][D] = B[(D + 1) % 3] * C[(D + 2) % 3] -
+                             B[(D + 2) % 3] * C[(D + 1) % 3];
+    }
+    return J[0][0] * Cofactor[0][0] + J[0][1] * Cofactor[0][1] +
+           J[0][2] * Cofactor[0][2];
+}
+
+/* A trilinear hex has a determinant of degree at most two in each
+ * parameter. Positive Bernstein coefficients bound it away from zero
+ * throughout the subdomain. Subdivide uncertain bounds by de Casteljau. */
+static int HexJacobianBoundsPositive(const double *Bounds, int Depth)
+{
+    int I, Stride, Positive = TRUE;
+    double Left[OPT_HEX_JACOBIAN_COEFFICIENTS];
+    double Right[OPT_HEX_JACOBIAN_COEFFICIENTS];
+
+    for (I = 0; I < OPT_HEX_JACOBIAN_COEFFICIENTS; ++I)
+        Positive &= Bounds[I] > 0.0;
+    if (Positive)
+        return TRUE;
+    if (Depth == 12)
+        return FALSE;
+    for (I = 0; I < OPT_HEX_JACOBIAN_COEFFICIENTS; ++I) {
+        if (I / 9 != 1 && I / 3 % 3 != 1 && I % 3 != 1 &&
+            Bounds[I] <= 0.0)
+            return FALSE;
+    }
+
+    Stride = Depth % 3 == 0 ? 9 : (Depth % 3 == 1 ? 3 : 1);
+    for (I = 0; I < OPT_HEX_JACOBIAN_COEFFICIENTS; ++I) {
+        if (I / Stride % 3 == 0) {
+            double A = Bounds[I], B = Bounds[I + Stride],
+                   C = Bounds[I + 2 * Stride];
+            double AB = 0.5 * (A + B), BC = 0.5 * (B + C);
+            double Mid = 0.5 * (AB + BC);
+
+            Left[I] = A;
+            Left[I + Stride] = AB;
+            Left[I + 2 * Stride] = Right[I] = Mid;
+            Right[I + Stride] = BC;
+            Right[I + 2 * Stride] = C;
+        }
+    }
+    return HexJacobianBoundsPositive(Left, Depth + 1) &&
+           HexJacobianBoundsPositive(Right, Depth + 1);
+}
+
+static int HexJacobianPositive(const OptHexRepairNodeStruct *Nodes,
+                               const OptElementStruct *Element,
+                               const OptHexJacobianSampleStruct *Samples)
+{
+    double Bounds[OPT_HEX_JACOBIAN_COEFFICIENTS], Cofactor[3][3];
+    int I, Stride;
+
+    for (I = 0; I < OPT_HEX_JACOBIAN_COEFFICIENTS; ++I) {
+        Bounds[I] = HexJacobian(Nodes, Element, &Samples[I], Cofactor);
+        if (!isfinite(Bounds[I]) || Bounds[I] <= 0.0)
+            return FALSE;
+    }
+    /* Convert values at {-1, 0, 1} to quadratic Bernstein coefficients. */
+    for (Stride = 9; Stride > 0; Stride /= 3) {
+        for (I = 0; I < OPT_HEX_JACOBIAN_COEFFICIENTS; ++I) {
+            if (I / Stride % 3 == 1) {
+                Bounds[I] = 2.0 * Bounds[I] -
+                    0.5 * (Bounds[I - Stride] + Bounds[I + Stride]);
+            }
+        }
+    }
+    return HexJacobianBoundsPositive(Bounds, 0);
+}
+
+/* IRIT exports element-based surface groups after the connectivity. Keep
+ * every node of those faces fixed, including SUPPORT and PRESSURE. */
+static int LockInpSurfaceNodes(FILE *Inp, const OptFEMModelStruct *Mesh,
+                               OptHexRepairNodeStruct *Nodes)
+{
+    static const int FaceNodes[6][4] = {
+        { 0, 1, 2, 3 }, { 4, 5, 6, 7 }, { 0, 1, 5, 4 },
+        { 1, 2, 6, 5 }, { 2, 3, 7, 6 }, { 3, 0, 4, 7 }
+    };
+    char Line[OPT_MAX_LINE];
+    int InSurface = FALSE;
+
+    while (fgets(Line, sizeof(Line), Inp) != NULL) {
+        const char *P = OptTrim(Line);
+
+        if (*P == '\0' || strncmp(P, "**", 2) == 0)
+            continue;
+        if (*P == '*')
+            InSurface = OPT_STRNICMP(P, "*SURFACE,", 9) == 0;
+        else if (InSurface) {
+            int Id, Face, I;
+
+            if (sscanf(P, "%d , S%d", &Id, &Face) != 2 ||
+                Id < 1 || Id > Mesh -> ElementCount || Face < 1 || Face > 6)
+                return FALSE;
+            for (I = 0; I < 4; ++I) {
+                int NodeId = Mesh -> Elements[Id - 1].NodeIds[FaceNodes[Face - 1][I]];
+                Nodes[NodeId - 1].Locked = TRUE;
+            }
+        }
+    }
+    return !ferror(Inp);
+}
+
+/* Project a deficient sample along the determinant gradient. Accumulate
+ * corrections before moving shared nodes so adjacent elements agree. */
+static void AccumulateHexCorrection(OptHexRepairNodeStruct *Nodes,
+                                    const OptElementStruct *Element,
+                                    const OptHexJacobianSampleStruct *Sample,
+                                    double Target)
+{
+    double Cofactor[3][3], Gradient[OPT_C3D8_NODE_COUNT][3] = { { 0 } };
+    double Deficit = Target - HexJacobian(Nodes, Element, Sample, Cofactor);
+    double Norm = 0.0, Step;
+    int I, A, D;
+
+    if (Deficit <= 1.0e-5 * Target)
+        return;
+    for (I = 0; I < OPT_C3D8_NODE_COUNT; ++I) {
+        if (!Nodes[Element -> NodeIds[I] - 1].Movable)
+            continue;
+        for (D = 0; D < 3; ++D) {
+            for (A = 0; A < 3; ++A)
+                Gradient[I][D] += Sample -> Derivative[I][A] * Cofactor[A][D];
+            Norm += Gradient[I][D] * Gradient[I][D];
+        }
+    }
+    if (Norm <= 0.0 || !isfinite(Norm))
+        return;
+    Step = Deficit / Norm;
+    for (I = 0; I < OPT_C3D8_NODE_COUNT; ++I) {
+        OptHexRepairNodeStruct *Node = &Nodes[Element -> NodeIds[I] - 1];
+
+        if (Gradient[I][0] == 0.0 && Gradient[I][1] == 0.0 &&
+            Gradient[I][2] == 0.0)
+            continue;
+        for (D = 0; D < 3; ++D)
+            Node -> Correction[D] += Step * Gradient[I][D];
+        ++Node -> Contributions;
+    }
+}
+
+/* Repair C3D8 coordinates only. Keep the established numbering and
+ * connectivity used for solver-to-subtile result transfer. */
+static int RepairHexMesh(const OptFEMModelStruct *Mesh,
+                         OptHexRepairNodeStruct *Nodes, double *Targets)
+{
+    const double Gauss = 1.0 / sqrt(3.0);
+    OptHexJacobianSampleStruct Samples[OPT_HEX_REPAIR_CHECKS];
+    double Cofactor[3][3];
+    int I, J, K, E, P, Pass, Changed, FirstInvalid = 0;
+    int Sample = 0;
+
+    for (I = -1; I <= 1; ++I)
+        for (J = -1; J <= 1; ++J)
+            for (K = -1; K <= 1; ++K)
+                HexShapeDerivatives(I, J, K, &Samples[Sample++]);
+    for (I = -1; I <= 1; I += 2)
+        for (J = -1; J <= 1; J += 2)
+            for (K = -1; K <= 1; K += 2)
+                HexShapeDerivatives(I * Gauss, J * Gauss, K * Gauss,
+                                    &Samples[Sample++]);
+
+    for (E = 0; E < Mesh -> ElementCount; ++E) {
+        const OptElementStruct *Element = &Mesh -> Elements[E];
+        double Minimum = HUGE_VAL, Scale = 0.0;
+        int Valid = HexJacobianPositive(Nodes, Element, Samples);
+
+        if (!Valid && FirstInvalid == 0)
+            FirstInvalid = Element -> Id;
+        for (P = 0; P < Sample; ++P) {
+            double Det = HexJacobian(Nodes, Element, &Samples[P], Cofactor);
+
+            if (!isfinite(Det))
+                return FALSE;
+            Minimum = fmin(Minimum, Det);
+            if (P >= OPT_HEX_JACOBIAN_COEFFICIENTS)
+                Scale = fmax(Scale, fabs(Det));
+        }
+        /* Use a relative determinant margin to account for element size. */
+        Targets[E] = 0.06 * Scale;
+        if (!Valid || Minimum < Targets[E]) {
+            for (I = 0; I < OPT_C3D8_NODE_COUNT; ++I) {
+                OptHexRepairNodeStruct *Node = &Nodes[Element -> NodeIds[I] - 1];
+                Node -> Movable = !Node -> Locked;
+            }
+        }
+    }
+    if (FirstInvalid == 0)
+        return TRUE;
+
+    fprintf(stderr, "Repairing C3D8 mesh, first invalid element %d.\n",
+            FirstInvalid);
+    for (Pass = 0; Pass < OPT_HEX_REPAIR_PASSES; ++Pass) {
+        Changed = FALSE;
+        for (E = 0; E < Mesh -> ElementCount; ++E) {
+            const OptElementStruct *Element = &Mesh -> Elements[E];
+
+            for (I = 0; I < OPT_C3D8_NODE_COUNT; ++I) {
+                if (Nodes[Element -> NodeIds[I] - 1].Movable)
+                    break;
+            }
+            if (I == OPT_C3D8_NODE_COUNT)
+                continue;
+            for (P = 0; P < Sample; ++P)
+                AccumulateHexCorrection(Nodes, Element, &Samples[P], Targets[E]);
+        }
+        for (I = 0; I < Mesh -> NodeCount; ++I) {
+            OptHexRepairNodeStruct *Node = &Nodes[I];
+
+            if (Node -> Contributions == 0)
+                continue;
+            for (J = 0; J < 3; ++J)
+                Node -> Point[J] += 0.95 * Node -> Correction[J] /
+                                    Node -> Contributions;
+            memset(Node -> Correction, 0, sizeof(Node -> Correction));
+            Node -> Contributions = 0;
+            Node -> Changed = Changed = TRUE;
+        }
+        if (!Changed)
+            break;
+    }
+    for (E = 0; E < Mesh -> ElementCount; ++E) {
+        if (!HexJacobianPositive(Nodes, &Mesh -> Elements[E], Samples)) {
+            fprintf(stderr, "C3D8 mesh repair could not validate element %d.\n",
+                    Mesh -> Elements[E].Id);
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static int WriteCheckedHexInp(FILE *Input, FILE *Output,
+                               const char *StageName, const char *InpName,
+                               const OptHexRepairNodeStruct *Nodes, int NodeCount)
+{
+    char Line[OPT_MAX_LINE];
+    int InNodes = FALSE;
+    size_t StageLength = strlen(StageName);
+
+    rewind(Input);
+    while (fgets(Line, sizeof(Line), Input) != NULL) {
+        const char *P = Line + strspn(Line, " \t");
+        size_t ContentLength = strcspn(Line, "\r\n");
+        int Id;
+
+        if (*P == '*' && P[1] != '*')
+            InNodes = OPT_STRNICMP(P, "*NODE,", 6) == 0;
+        if (InNodes && sscanf(P, "%d", &Id) == 1) {
+            const IrtRType *Point;
+
+            if (Id < 1 || Id > NodeCount)
+                return FALSE;
+            Point = Nodes[Id - 1].Point;
+            if (Nodes[Id - 1].Changed) {
+                if (fprintf(Output, "%d, %.17g,%.17g,%.17g%s", Id,
+                            Point[0], Point[1], Point[2],
+                            Line + ContentLength) < 0)
+                    return FALSE;
+                continue;
+            }
+        }
+        if (ContentLength == StageLength &&
+            OPT_STRNICMP(Line, StageName, StageLength) == 0) {
+            if (fprintf(Output, "%s%s", InpName, Line + ContentLength) < 0)
+                return FALSE;
+        }
+        else if (fputs(Line, Output) == EOF)
+            return FALSE;
+    }
+    return !ferror(Input);
+}
+
+/* IRIT supplies a file exporter. Stage its merged mesh privately, then
+ * validate and repair it before exposing the final INP to the solver. */
+static int SaveCheckedHexInp(const IritPrsrObjectStruct *Geometry,
+                             const char *InpName,
+                             IritPrsrINPSaveDfltFileParamsStruct *Save)
+{
+    char Directory[MAX_PATH], Stage[MAX_PATH] = "", Checked[MAX_PATH] = "";
+    char *FileName;
+    DWORD FullLength;
+    FILE *Input = NULL, *Output = NULL;
+    OptFEMModelStruct Mesh = { 0 };
+    OptHexRepairNodeStruct *Nodes = NULL;
+    double *Targets = NULL;
+    int I, J, Ok = FALSE;
+
+    FullLength = GetFullPathNameA(InpName, sizeof(Directory), Directory, &FileName);
+    if (FullLength == 0 || FullLength >= sizeof(Directory) || FileName == NULL)
+        goto Cleanup;
+    *FileName = '\0';
+    if (!GetTempFileNameA(Directory, "fem", 0, Stage) ||
+        !IritPrsrInpSaveFile(Geometry, Stage, Save) || !ReadINP(&Mesh, Stage))
+        goto Cleanup;
+
+    Nodes = (OptHexRepairNodeStruct *) OptAllocZero(Mesh.NodeCount, sizeof(*Nodes));
+    Targets = (double *) OptAllocZero(Mesh.ElementCount, sizeof(*Targets));
+    if (Nodes == NULL || Targets == NULL)
+        goto Cleanup;
+    /* Irit2inp assigns dense IDs in output order after merging nodes. */
+    for (I = 0; I < Mesh.NodeCount; ++I) {
+        const OptNodeStruct *Node = &Mesh.Nodes[I];
+
+        if (Node -> Id != I + 1)
+            goto Cleanup;
+        Nodes[I].Point[0] = Node -> X;
+        Nodes[I].Point[1] = Node -> Y;
+        Nodes[I].Point[2] = Node -> Z;
+    }
+    for (I = 0; I < Mesh.ElementCount; ++I) {
+        const OptElementStruct *Element = &Mesh.Elements[I];
+
+        if (Element -> Id != I + 1)
+            goto Cleanup;
+        for (J = 0; J < OPT_C3D8_NODE_COUNT; ++J) {
+            if (Element -> NodeIds[J] < 1 || Element -> NodeIds[J] > Mesh.NodeCount)
+                goto Cleanup;
+        }
+    }
+    Input = fopen(Stage, "rb");
+    if (Input == NULL || !LockInpSurfaceNodes(Input, &Mesh, Nodes) ||
+        !RepairHexMesh(&Mesh, Nodes, Targets))
+        goto Cleanup;
+
+    if (!GetTempFileNameA(Directory, "fea", 0, Checked))
+        goto Cleanup;
+    Output = fopen(Checked, "wb");
+    if (Output == NULL ||
+        !WriteCheckedHexInp(Input, Output, Stage, InpName, Nodes, Mesh.NodeCount))
+        goto Cleanup;
+    Ok = fclose(Output) == 0;
+    Output = NULL;
+    if (Ok)
+        Ok = MoveFileExA(Checked, InpName, MOVEFILE_REPLACE_EXISTING) != 0;
+
+Cleanup:
+    if (Input != NULL)
+        fclose(Input);
+    if (Output != NULL)
+        fclose(Output);
+    IritFree(Nodes);
+    IritFree(Targets);
+    FEMModelReset(&Mesh);
+    if (Checked[0] != '\0')
+        DeleteFileA(Checked);
+    if (Stage[0] != '\0')
+        DeleteFileA(Stage);
+    if (!Ok)
+        fprintf(stderr, "Could not validate and publish C3D8 INP %s.\n", InpName);
+    return Ok;
+}
+
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Generates, deforms, tags, scales, and exports all configured macro bodies. *
@@ -2982,7 +3390,7 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         Save.GeometryType = IRIT_PRSR_FEM_ELEMENT_C3D8;
         Save.Messages = TRUE;
 
-        if (!IritPrsrInpSaveFile(Scaled, Opt -> Config.InpFile, &Save))
+        if (!SaveCheckedHexInp(Scaled, Opt -> Config.InpFile, &Save))
             return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
         Handler = IritPrsrOpenDataFile(Opt -> Config.ItdOutputFile,
@@ -3443,16 +3851,16 @@ static int OptReadCsvHeader(FILE *F, const OptWorkflowStateStruct *Opt)
 * RETURN VALUE:                                                            *
 *   int: TRUE if the file was parsed successfully, FALSE otherwise.        *
 ***************************************************************************/
-static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
+static int ReadINP(OptFEMModelStruct *FEM, const char *INPPath)
 {
     FILE *F;
     char Line[OPT_MAX_LINE];
     enum { SEC_NONE, SEC_NODE, SEC_ELEMENT } CurrentSection = SEC_NONE;
 
-    if (Opt == NULL || INPPath == NULL)
+    if (FEM == NULL || INPPath == NULL)
         return FALSE;
 
-    FEMModelReset(&Opt -> FEM);
+    FEMModelReset(FEM);
     F = fopen(INPPath, "r");
     if (F == NULL)
         return FALSE;
@@ -3491,9 +3899,9 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                 Node.X = (CagdRType) atof(Parts[1]);
                 Node.Y = (CagdRType) atof(Parts[2]);
                 Node.Z = (CagdRType) atof(Parts[3]);
-                if (Node.Id <= 0 || !FEMNodePush(&Opt -> FEM, &Node)) {
+                if (Node.Id <= 0 || !FEMNodePush(FEM, &Node)) {
                     fclose(F);
-                    FEMModelReset(&Opt -> FEM);
+                    FEMModelReset(FEM);
                     return FALSE;
                 }
             }
@@ -3513,7 +3921,7 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                 int NodeId = atoi(OptTrim(Tok));
                 if (NodeId <= 0) {
                     fclose(F);
-                    FEMModelReset(&Opt -> FEM);
+                    FEMModelReset(FEM);
                     return FALSE;
                 }
                 Elem.NodeIds[Elem.NodeCount++] = NodeId;
@@ -3524,19 +3932,24 @@ static int ReadINP(OptWorkflowStateStruct *Opt, const char *INPPath)
                         "Invalid C3D8 element %d in %s: %d node IDs, expected %d.\n",
                         Elem.Id, INPPath, Elem.NodeCount, OPT_C3D8_NODE_COUNT);
                 fclose(F);
-                FEMModelReset(&Opt -> FEM);
+                FEMModelReset(FEM);
                 return FALSE;
             }
-            if (!FEMElementPush(&Opt -> FEM, &Elem)) {
+            if (!FEMElementPush(FEM, &Elem)) {
                 fclose(F);
-                FEMModelReset(&Opt -> FEM);
+                FEMModelReset(FEM);
                 return FALSE;
             }
         }
     }
 
+    if (ferror(F)) {
+        fclose(F);
+        FEMModelReset(FEM);
+        return FALSE;
+    }
     fclose(F);
-    return Opt -> FEM.NodeCount > 0 && Opt -> FEM.ElementCount > 0;
+    return FEM -> NodeCount > 0 && FEM -> ElementCount > 0;
 }
 
 /***************************************************************************
@@ -3795,7 +4208,7 @@ static int InitializePersistentTopology(OptWorkflowStateStruct *Opt)
     if (Opt -> Lattice.FEMTopologyBound)
         return TRUE;
 
-    if (!ReadINP(Opt, Opt -> Config.InpFile)) {
+    if (!ReadINP(&Opt -> FEM, Opt -> Config.InpFile)) {
         fprintf(stderr, "Failed to parse initial INP topology: %s\n",
                 Opt -> Config.InpFile);
         return FALSE;

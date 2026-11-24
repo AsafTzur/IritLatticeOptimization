@@ -1,5 +1,18 @@
 # Session Handoff
 
+## 2026-11-24 C3D8 mesh repair before solver export
+
+The optimization driver in `test.c` now checks the merged C3D8 elements before
+publishing their INP. A local determinant-gradient correction runs when an
+element fails validation. Tagged surface nodes and element connectivity
+stay fixed. A failed repair prevents publication.
+
+Visual C++ 2022 compiled `test.c` in x64 C mode with `/W4`. An isolated
+C harness verified a valid cube, rejection of a fully fixed inverted cube
+with the previous output preserved, and repair of an archived 20,412-element
+mesh with 398 nodes moved and 1,178 tagged nodes fixed. No Workbench solve
+was run. See D-019 in `DECISIONS.md`.
+
 ## 2026-11-19 Winglet support and material export
 
 The first body's support selector was switched to V-max. The inspected V-max
