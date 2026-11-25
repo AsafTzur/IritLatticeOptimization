@@ -1,12 +1,5 @@
 # Project Context
 
-## C3D8 mesh validation
-
-The geometry export stage validates the merged FE mesh before publishing
-the INP. If a hex cannot be validated, the optimizer tries local shared-node
-corrections while holding tagged surfaces fixed. It revalidates before
-publishing and stops geometry execution if the repair fails.
-
 Last reviewed: 2026-11-20
 
 ## Purpose

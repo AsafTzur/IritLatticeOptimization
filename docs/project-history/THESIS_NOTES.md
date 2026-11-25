@@ -1,16 +1,5 @@
 # Thesis Notes
 
-## Exported hexahedron validity
-
-The C3D8 Jacobian determinant has degree at most two in each reference
-coordinate. Positive Bernstein coefficients bound it above zero over the
-reference cell. The export check subdivides uncertain bounds and attempts
-a local correction when positivity cannot be established. The correction
-projects deficient samples along determinant gradients and averages updates
-at shared nodes. It fixes nodes on tagged surfaces and retains connectivity.
-This check establishes local element validity within numerical precision.
-It does not test overlap between separate elements or bodies.
-
 This file collects technically supportable material for a future thesis. Draft
 claims must remain tied to code, experiment logs, solver output, or figures.
 

@@ -1,17 +1,5 @@
 # Changelog
 
-## 2026-11-24 — Validate and repair exported C3D8 meshes
-
-The mesh export path in `test.c` validates the merged C3D8 mesh before
-publishing the solver input. It conditionally adjusts free node coordinates
-and keeps node IDs, element connectivity, and tagged surface nodes fixed.
-An invalid mesh that cannot be repaired stops export.
-
-Visual C++ 2022 compiled `test.c` in x64 C mode with `/W4`.
-An isolated C harness verified the valid-mesh path, rejection of an inverted
-hex with fixed nodes, and repair of an archived 20,412-element mesh with
-398 nodes moved and 1,178 tagged nodes fixed.
-
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
