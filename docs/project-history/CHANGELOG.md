@@ -3,6 +3,40 @@
 This log records material project changes. Entries made before local source
 control is initialized may be reconstructed from local files and timestamps.
 
+## 2026-11-27 — Distribute scalar counts across spans in exact local tiling
+
+The Winglet run exited at initialization with exact local tiling because the
+second body's uniform five-tile V grid crossed its four knot spans.
+`test.c` now derives a positive count for each span while preserving the
+scalar total. It reports the distribution when it adjusts the uniform grid
+and identifies the minimum valid total when the count is too small.
+`opt_config.txt` now describes the exact placement rule.
+
+Visual C++ 2022 compiled and linked the change. The exact nonaligned
+synthetic fixture exported all 14 tiles and the insufficient-count fixture
+reported the required minimum. The segmented, scalar, and multi-body smoke
+cases passed. The copied Winglet configuration completed exact geometry
+and INP export and bound all 22,680 elements to 120 tiles.
+
+## 2026-11-27 — Support tile counts per deformation-map knot span
+
+- `optimization_config_parser.c` and `opt_config.h` accept mixed scalar and
+  bracketed U/V/W body entries and retain both per-body totals and span
+  counts. `opt_config.txt` documents the syntax.
+- `test.c` validates each list against the body's knot spans, places tiles
+  using the requested repeats, and maps them to the unified lattice for
+  thickness, skin, FEM selections, and patch ownership. Exact local tiling
+  passes interval counts to IRIT and translates span-local callback indices.
+  Global FFD adjusts placement on bracketed axes.
+- Visual C++ 2022 compiled and linked the updated executable. Geometry-only
+  checks covered mixed entries, all three axes, two bodies, both deformation
+  modes on the IRIT torus, and invalid count configurations. Three scalar
+  fixtures reproduced the previous executable's CSV, ITD, and INP
+  byte-for-byte. A two-export binding check after a thickness change passed
+  for mixed global FFD, exact local, and mixed two-body configurations.
+  The exact skinned fixture exported seven passive patches, one per
+  exterior V-min tile. No external structural solver ran.
+
 ## 2026-11-20 — Remove superseded FEM proposal files
 
 Removed `inp_fem_params.h`, `InpFEMParams_examples.txt`, and

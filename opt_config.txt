@@ -14,11 +14,12 @@ lattice_type = 0
 # Exterior skin thicknesses for lattice type 0, ordered as:
 # [U-min, U-max, V-min, V-max, W-min, W-max]. Zero disables that face.
 skin_face_thickness = [0, 0, 0.15, 0.1, 0, 0]
-# Multiple values are still accepted by the parser, for example:
-# lattice_count_u = 2, 3
-# lattice_count_v = 5, 4
-# lattice_count_w = 20, 10
-# Current single-body execution uses only the first U/V/W set.
+# Enter one value per body in ITD order on each axis. Separate bodies with commas.
+# A bracketed list gives one positive tile count per knot span on that axis.
+# For example, lattice_count_u = [1,2,3,1], 5 gives body 1 seven tiles
+# across four U spans and uses the existing scalar setting for body 2.
+# Tile totals must match across bodies on both non-stack axes.
+# Set body_stack_axis = u, v, or w when the totals alone do not identify it.
 
 lattice_count_u = 5,5
 lattice_count_v = 4,10
@@ -27,6 +28,8 @@ lattice_count_w = 3,1
 initial_thickness = 0.1
 thickness_change_tolerance = 0.0025
 
+# Exact local tiling on a segmented body distributes scalar counts across
+# knot spans, with at least one tile per span.
 use_microstructure_ffd = true
 
 # -------------------------------------------------------------

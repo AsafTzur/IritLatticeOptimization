@@ -1,5 +1,35 @@
 # Session Handoff
 
+## 2026-11-27 segmented tiling
+
+Implemented one scalar or one span list per body and axis. For example,
+`lattice_count_u = [1,2,3,1], 5` gives body 1 seven U tiles across four spans
+and uses the scalar setting for body 2. `test.c` uses the totals for global
+indexing, validates list lengths against knot spans, and reuses the existing
+tile IDs for ownership and FEM selections. The configuration schema, parser,
+and template are updated. See [D-019](DECISIONS.md#d-019--keep-segmented-placement-at-the-geometry-boundary).
+
+Ran `cmd.exe /d /c .build\segmented\build.cmd` and the local Python geometry,
+tile-bounds, skin, and baseline checks under `.build/segmented`. The executable
+linked with the same warnings as the scalar baseline. The geometry checks
+passed for mixed inputs, three bracketed axes, two bodies, curved maps, and
+rejected malformed or mismatched counts. The two-export `bind_check.exe`
+verified persistent connectivity and patch ownership for 14, 21, and
+18 tiles in the three unskinned fixtures. No ANSYS or CalculiX solve ran.
+
+The reported instant exit with `use_microstructure_ffd = false` was
+reproduced with the VS runtime config and `Winglet_knots.itd` copied into the
+workspace. The second body has four V spans and scalar count five. The
+original validation rejected the uniform grid. `test.c` now retains the
+scalar total and assigns at least one tile per span, so the Winglet
+configuration resolves to `[1,2,1,1]` in V. Updated the template comments and
+the D-019 record. Rebuilt with `.build/segmented/build.cmd` and ran the
+geometry smoke suite with the new nonaligned and insufficient-count cases.
+The copied Winglet configuration completed exact export and initialized
+persistent topology with 120 tiles and 22,680 elements. The run log is at
+`.build/segmented/winglet_exact/run.log`.
+Geometric and FE continuity across distinct macro bodies remains unverified.
+
 ## 2026-11-19 Winglet support and material export
 
 The first body's support selector was switched to V-max. The inspected V-max
@@ -14,8 +44,6 @@ missing, and emits a clamp only when support nodes are available. The material
 and section were also added directly to the inspected generated INP. `test.c`
 uses `HasSkin` to gate tile refinement. The staged whitespace check passed.
 No build or solver run was performed for these edits.
-
-Last updated: 2026-11-20
 
 ## 2026-11-20 superseded proposal-file removal
 

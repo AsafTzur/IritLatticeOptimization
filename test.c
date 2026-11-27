@@ -184,6 +184,17 @@ typedef struct OptNeighbourEntryStruct {
     CagdRType X, Y, Z;
 } OptNeighbourEntryStruct;
 
+typedef struct OptSpanTilingStruct {
+    CagdRType *Knots;
+    int *TileOffsets;              /* Prefix sums, including the total. */
+    IritUserMicroTilingStepStruct Steps;
+} OptSpanTilingStruct;
+
+typedef struct OptBodyTilingStruct {
+    IritMvarMVStruct *Map;          /* Prepared map for a segmented body. */
+    OptSpanTilingStruct Axis[3];
+} OptBodyTilingStruct;
+
 typedef struct UserMicroLocalDataStruct {
     IritTrivTVStruct *DefMap;
     LclThicknessFuncType ThicknessFuncCB;
@@ -191,6 +202,7 @@ typedef struct UserMicroLocalDataStruct {
     int Counts[3];
     int GridOrigin[3];
     int BodyIndex;             /* Zero-based macro body / set index. */
+    const OptBodyTilingStruct *SpanTiling;
 } UserMicroLocalDataStruct;
 
 typedef struct OptLegacyStateStruct {
@@ -253,6 +265,7 @@ struct OptWorkflowStateStruct {
      * one unified logical U/V/W lattice regardless of macro-body count. */
     IritTrivTVStruct *DefMap;
     int DefMapCount;
+    OptBodyTilingStruct *BodyTilings;
     int StackAxis;
     CagdRType *Results;              /* Flat array [Iter][3]. */
     OptLegacyStateStruct Legacy;     /* Per-run IRIT CSV/callback state. */
@@ -381,7 +394,7 @@ static CagdRType *ReadTileData(const OptWorkflowStateStruct *Opt,
                                int ExpectedCount);
 
 /* Workflow state and containers. */
-static void InitializeWorkflowState(OptWorkflowStateStruct *Opt);
+static int InitializeWorkflowState(OptWorkflowStateStruct *Opt);
 static void ResolveLatticeLayout(OptWorkflowStateStruct *Opt);
 static void InitOrResetResultsArray(OptWorkflowStateStruct *Opt);
 static int InitLatticeModel(OptWorkflowStateStruct *Opt);
@@ -524,7 +537,12 @@ int IritOptRun(const OptConfigStruct *Config)
 
     if (!Config -> GeometryOnly)
         GlblActiveWorkflow = Opt;
-    InitializeWorkflowState(Opt);
+    if (!InitializeWorkflowState(Opt)) {
+        if (!Config -> GeometryOnly)
+            GlblActiveWorkflow = NULL;
+        FreeWorkflowState(Opt);
+        return FALSE;
+    }
     if (Config -> GeometryOnly)
         Ok = InitLegacyDataFile(Opt) && RunIRITIntegrated(Opt, 0);
     else {
@@ -2374,6 +2392,71 @@ static int PreProcessTile1FaceParam(
     return TRUE;
 }
 
+/* Converts IRIT's callback position to body-local indices. In the global
+ * FFD path IRIT visits the whole grid, so replace its uniform placement
+ * with the requested knot-span placement on each bracketed axis. */
+static void OptResolveTilePlacement(const UserMicroLocalDataStruct *Local,
+                                    IritUserMicroPreProcessTileCBStruct *CBData,
+                                    int BodyTile[3])
+{
+    int D;
+    const OptBodyTilingStruct *Tiling = Local -> SpanTiling;
+    CagdBType Global = Local -> Opt -> Config.UseMicroStructFFD;
+
+    for (D = 0; D < 3; ++D) {
+        int Tile = CBData -> TileIdxs[D];
+        const OptSpanTilingStruct *Axis =
+            Tiling != NULL ? &Tiling -> Axis[D] : NULL;
+
+        if (Tile < 0 || Tile >= Local -> Counts[D])
+            OptFatal("Tile callback index outside macro body");
+        if (Axis != NULL && Axis -> Steps.Len > 0) {
+            if (Global) {
+                int First = 0, Last = Axis -> Steps.Len;
+                CagdRType Start, Step;
+
+                while (Last - First > 1) {
+                    int Middle = First + (Last - First) / 2;
+
+                    if (Tile < Axis -> TileOffsets[Middle])
+                        Last = Middle;
+                    else
+                        First = Middle;
+                }
+                Start = Axis -> Knots[First];
+                Step = (Axis -> Knots[First + 1] - Start) /
+                       Axis -> Steps.TilesPerIntervals[First];
+                CBData -> TileLclDmnMin[D] =
+                    Start + (Tile - Axis -> TileOffsets[First]) * Step;
+                CBData -> TileLclDmnMax[D] = Tile + 1 == Axis -> TileOffsets[First + 1] ?
+                    Axis -> Knots[First + 1] : Start +
+                    (Tile + 1 - Axis -> TileOffsets[First]) * Step;
+            }
+            else {
+                int Span = CBData -> BzrElmntIdxs[D];
+
+                if (Span < 0 || Span >= Axis -> Steps.Len ||
+                    Tile >= Axis -> TileOffsets[Span + 1] -
+                            Axis -> TileOffsets[Span])
+                    OptFatal("Tile callback index outside configured knot span");
+                Tile += Axis -> TileOffsets[Span];
+            }
+        }
+        BodyTile[D] = Tile;
+    }
+
+    if (Tiling != NULL && Global) {
+        IrtHmgnMatType Scale, Translate;
+        CagdRType *Min = CBData -> TileLclDmnMin;
+        CagdRType *Max = CBData -> TileLclDmnMax;
+
+        IritMiscMatGenMatScale(Max[0] - Min[0], Max[1] - Min[1],
+                              Max[2] - Min[2], Scale);
+        IritMiscMatGenMatTrans(Min[0], Min[1], Min[2], Translate);
+        IritMiscMatMultTwo4by4(CBData -> Mat, Scale, Translate);
+    }
+}
+
 /***************************************************************************
 * DESCRIPTION:                                                             *
 *   Builds one tile geometry according to the current legacy thickness     *
@@ -2401,6 +2484,7 @@ static IritPrsrObjectStruct *PreProcessTile(
     IritUserMicroTileBndryPrmStruct VMinPrms, VMaxPrms;
     IritUserMicroTileBndryPrmStruct WMinPrms, WMaxPrms;
     int Index;
+    int BodyTile[3], GlobalTile[3], D;
     int BaseIndex;
     int Arms = 6;
     CagdBType Circle = FALSE;
@@ -2408,19 +2492,17 @@ static IritPrsrObjectStruct *PreProcessTile(
 
     assert(Tile == NULL);
 
-    Index = LclData -> GridOrigin[0] + CBData -> TileIdxs[0] +
-        (LclData -> GridOrigin[1] + CBData -> TileIdxs[1]) *
-            Opt -> Config.LatticeCountU +
-        (LclData -> GridOrigin[2] + CBData -> TileIdxs[2]) *
-            Opt -> Config.LatticeCountU * Opt -> Config.LatticeCountV;
+    OptResolveTilePlacement(LclData, CBData, BodyTile);
+    for (D = 0; D < 3; ++D)
+        GlobalTile[D] = LclData -> GridOrigin[D] + BodyTile[D];
+    Index = GlobalTile[0] + Opt -> Config.LatticeCountU *
+            (GlobalTile[1] + Opt -> Config.LatticeCountV * GlobalTile[2]);
 
     fprintf(stderr,
             "Index:[%d], Tile[%d,%d,%d] from "
             "(%.3f, %.3f %.3f) to (%.3f, %.3f, %.3f)\r",
             Index,
-            CBData -> TileIdxs[0],
-            CBData -> TileIdxs[1],
-            CBData -> TileIdxs[2],
+            BodyTile[0], BodyTile[1], BodyTile[2],
             LclMinDmn[0], LclMinDmn[1], LclMinDmn[2],
             LclMaxDmn[0], LclMaxDmn[1], LclMaxDmn[2]);
 
@@ -2473,12 +2555,8 @@ static IritPrsrObjectStruct *PreProcessTile(
         case 0: {
             CagdRType FaceSkin[IRIT_OPT_FACE_COUNT][4] = { { 0.0 } };
             CagdBType HasSkin = FALSE;
-            int GlobalTile[3];
             int Face, Corner;
 
-            for (Face = 0; Face < 3; ++Face)
-                GlobalTile[Face] = LclData -> GridOrigin[Face] +
-                                   CBData -> TileIdxs[Face];
             for (Face = 0; Face < IRIT_OPT_FACE_COUNT; ++Face) {
                 int Axis = Face / 2;
                 int IsMaximumFace = Face % 2;
@@ -2650,11 +2728,11 @@ static IritPrsrObjectStruct *PreProcessTile(
     {
         int SupportTile =
             LclData -> BodyIndex == Opt -> Config.FemSupportBodyIndex &&
-            OptIsTileOnFace(CBData -> TileIdxs, LclData -> Counts,
+            OptIsTileOnFace(BodyTile, LclData -> Counts,
                             Opt -> Config.FemSupportFace);
         int PressureTile =
             LclData -> BodyIndex == Opt -> Config.FemPressureBodyIndex &&
-            OptIsTileOnFace(CBData -> TileIdxs, LclData -> Counts,
+            OptIsTileOnFace(BodyTile, LclData -> Counts,
                             Opt -> Config.FemPressureFace);
 
         DefineINPFaceSelections(
@@ -2897,6 +2975,8 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
         LclData.Opt = Opt;
         LclData.BodyIndex = B;
         LclData.DefMap = BodyMap;
+        if (Opt -> BodyTilings[B].Map != NULL)
+            LclData.SpanTiling = &Opt -> BodyTilings[B];
         for (D = 0; D < 3; ++D) {
             LclData.Counts[D] = Counts[D];
             LclData.GridOrigin[D] = GridOrigin[D];
@@ -2907,14 +2987,17 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
                 B + 1, Opt -> DefMapCount,
                 Counts[0], Counts[1], Counts[2]);
 
-        if (UseMicroStructFFD || !UseFFDTileAggregation) {
+        if (UseMicroStructFFD || !UseFFDTileAggregation ||
+            LclData.SpanTiling != NULL) {
             IRIT_ZAP_MEM(&Param, sizeof(Param));
-            MV = IritMvarCnvrtTVToMV(BodyMap);
-            if (MV == NULL)
+            if (LclData.SpanTiling == NULL)
+                MV = IritMvarCnvrtTVToMV(BodyMap);
+            Param.DeformMV = LclData.SpanTiling != NULL ?
+                             LclData.SpanTiling -> Map : MV;
+            if (Param.DeformMV == NULL)
                 return FinishMicroStructures(MV, BodyMS, Scaled, MS, FALSE);
 
             Param.TilingType = IRIT_USER_MICRO_TILE_REGULAR;
-            Param.DeformMV = MV;
             Param.ApproxLowOrder = 2;
             Reg -> TilingStepMode = TRUE;
             Reg -> MaxPolyEdgeLen = 0.1;
@@ -2922,10 +3005,14 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
             Reg -> FFDeformApprox = UseMicroStructFFD ? TRUE : FALSE;
 
             for (D = 0; D < 3; ++D) {
-                Steps[D][0] = Counts[D];
-                Steps[D][1] = 0;
-                Reg -> TilingSteps[D].TilesPerIntervals = Steps[D];
-                Reg -> TilingSteps[D].Len = 1;
+                if (!UseMicroStructFFD && LclData.SpanTiling != NULL)
+                    Reg -> TilingSteps[D] = LclData.SpanTiling -> Axis[D].Steps;
+                else {
+                    Steps[D][0] = Counts[D];
+                    Steps[D][1] = 0;
+                    Reg -> TilingSteps[D].TilesPerIntervals = Steps[D];
+                    Reg -> TilingSteps[D].Len = 1;
+                }
             }
 
             Reg -> PreProcessCBFunc = PreProcessTile;
@@ -2933,8 +3020,10 @@ static int GenerateMicroStructures(OptWorkflowStateStruct *Opt, int Mode)
             Reg -> CBFuncData = &LclData;
             BodyMS = IritUserMicroStructComposition(&Param);
 
-            IritMvarMVFree(MV);
-            MV = NULL;
+            if (MV != NULL) {
+                IritMvarMVFree(MV);
+                MV = NULL;
+            }
         }
         else {
             IRIT_ZAP_MEM(&FFDInfo, sizeof(FFDInfo));
@@ -3227,6 +3316,133 @@ static IritPrsrObjectStruct* IritTVUniformDegree(const IritPrsrObjectStruct* Til
 *                   Geometry Adapter / Count Parsing                       *
 ***************************************************************************/
 
+/* Builds a tiling vector in knot order and its body-local tile offsets. */
+static int OptPrepareSpanAxis(const OptWorkflowStateStruct *Opt,
+                              OptBodyTilingStruct *Tiling, int Body, int Axis)
+{
+    const OptLatticeSegmentsStruct *Lists = Opt -> Config.LatticeSegments[Axis];
+    const OptLatticeSegmentsStruct *Segments = Lists != NULL ? &Lists[Body] : NULL;
+    CagdBType Explicit = Segments != NULL && Segments -> Length > 0;
+    OptSpanTilingStruct *Span = &Tiling -> Axis[Axis];
+    const IritMvarMVStruct *Map = Tiling -> Map;
+    int Total = Opt -> Config.LatticeCountLists[Axis][Body];
+    int I, KnotCount = Map -> Lengths[Axis] + Map -> Orders[Axis];
+    int SpanCount;
+    CagdBType Adjusted = FALSE;
+
+    if (!Explicit && Opt -> Config.UseMicroStructFFD)
+        return TRUE;
+
+    Span -> Knots = OptAllocZero((size_t) KnotCount, sizeof(*Span -> Knots));
+    if (Span -> Knots == NULL)
+        return FALSE;
+    SpanCount = IritCagdBspKnotsMultiplicityVector(Map -> KnotVectors[Axis],
+                      KnotCount, Span -> Knots, NULL, IRIT_EPS) - 1;
+    if (Explicit && Segments -> Length != SpanCount) {
+        fprintf(stderr,
+                "Macro body %d, %c axis: %d segment counts supplied, "
+                "but the deformation map has %d knot spans.\n",
+                Body + 1, "UVW"[Axis], Segments -> Length, SpanCount);
+        return FALSE;
+    }
+    if (SpanCount < 1)
+        return FALSE;
+    if (!Explicit && Total < SpanCount) {
+        fprintf(stderr,
+                "Macro body %d, %c axis: exact local tiling requires at "
+                "least %d tiles for %d knot spans, but %d were requested. "
+                "Increase the count or set use_microstructure_ffd = true.\n",
+                Body + 1, "UVW"[Axis], SpanCount, SpanCount, Total);
+        return FALSE;
+    }
+
+    Span -> Steps.Len = SpanCount;
+    Span -> TileOffsets = OptAllocZero((size_t) SpanCount + 1,
+                                       sizeof(*Span -> TileOffsets));
+    Span -> Steps.TilesPerIntervals = OptAllocZero((size_t) SpanCount,
+                                       sizeof(*Span -> Steps.TilesPerIntervals));
+    if (Span -> TileOffsets == NULL || Span -> Steps.TilesPerIntervals == NULL)
+        return FALSE;
+
+    for (I = 0; I < SpanCount; ++I) {
+        int Start = Span -> TileOffsets[I], End;
+
+        if (Explicit)
+            End = Start + Segments -> Counts[I];
+        else {
+            /* Keep each span boundary near the uniform grid while
+             * reserving at least one tile for each remaining span. */
+            CagdRType Grid = Total * (Span -> Knots[I + 1] - Span -> Knots[0]) /
+                             (Span -> Knots[SpanCount] - Span -> Knots[0]);
+            int Nearest = (int) floor(Grid + 0.5);
+            int Last = Total - (SpanCount - I - 1);
+
+            End = IRIT_BOUND(Nearest, Start + 1, Last);
+            if (fabs(Grid - End) > IRIT_EPS)
+                Adjusted = TRUE;
+        }
+        Span -> TileOffsets[I + 1] = End;
+        Span -> Steps.TilesPerIntervals[I] = End - Start;
+    }
+    if (Adjusted) {
+        fprintf(stderr,
+                "Macro body %d, %c axis: distributing %d tiles across "
+                "knot spans [", Body + 1, "UVW"[Axis], Total);
+        for (I = 0; I < SpanCount; ++I)
+            fprintf(stderr, "%s%d", I == 0 ? "" : ", ",
+                    Span -> TileOffsets[I + 1] - Span -> TileOffsets[I]);
+        fprintf(stderr, "] for exact local tiling.\n");
+    }
+    return TRUE;
+}
+
+/* Prepares the open knot vectors used for placement and callback indexing. */
+static int OptPrepareBodyTilings(OptWorkflowStateStruct *Opt)
+{
+    const IritTrivTVStruct *BodyMap = Opt -> DefMap;
+    int B, D;
+
+    Opt -> BodyTilings = OptAllocZero((size_t) Opt -> DefMapCount,
+                                      sizeof(*Opt -> BodyTilings));
+    if (Opt -> BodyTilings == NULL)
+        return FALSE;
+
+    for (B = 0; B < Opt -> DefMapCount; ++B, BodyMap = BodyMap -> Pnext) {
+        OptBodyTilingStruct *Tiling = &Opt -> BodyTilings[B];
+        CagdBType HasSegments = FALSE;
+        IritMvarMVStruct *Map;
+
+        for (D = 0; D < 3; ++D) {
+            const OptLatticeSegmentsStruct *Lists =
+                Opt -> Config.LatticeSegments[D];
+
+            if (Lists != NULL && Lists[B].Length > 0)
+                HasSegments = TRUE;
+        }
+        if (!HasSegments)
+            continue;
+
+        Map = IritMvarCnvrtTVToMV(BodyMap);
+        if (Map == NULL)
+            return FALSE;
+        Tiling -> Map = Map;
+        if (IRIT_MVAR_IS_BEZIER_MV(Map))
+            Tiling -> Map = IritMvarCnvrtBzr2BspMV(Map);
+        else if (!IritMvarBspMVHasOpenEC(Map))
+            Tiling -> Map = IritMvarMVOpenEnd(Map);
+        if (Tiling -> Map != Map)
+            IritMvarMVFree(Map);
+        if (Tiling -> Map == NULL)
+            return FALSE;
+
+        for (D = 0; D < 3; ++D) {
+            if (!OptPrepareSpanAxis(Opt, Tiling, B, D))
+                return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 /***************************************************************************
 * DESCRIPTION:                                                             *
 * Loads every macro-shape trivariate and resolves their count lists into    *
@@ -3260,7 +3476,6 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
 
             if (Copy == NULL) {
                 IritPrsrFreeObjectList(Objects);
-                IritTrivTVFreeList(Opt -> DefMap);
                 return FALSE;
             }
             Copy -> Pnext = NULL;
@@ -3293,7 +3508,7 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
     for (D = 0; D < 3; ++D) {
         if (Opt -> Config.LatticeCountListLengths[D] != FoundCount) {
             fprintf(stderr,
-                    "%c count list has %d values, but macro shape has "
+                    "%c count list has %d body entries, but macro shape has "
                     "%d bodies.\n",
                     "UVW"[D], Opt -> Config.LatticeCountListLengths[D],
                     FoundCount);
@@ -3369,12 +3584,14 @@ static int OptLoadDefMap(OptWorkflowStateStruct *Opt)
     }
 
     TileCount = (long long) Opt -> Config.LatticeCountU *
-                Opt -> Config.LatticeCountV * Opt -> Config.LatticeCountW;
-    if (TileCount <= 0 || TileCount > INT_MAX) {
-        IritTrivTVFree(Opt -> DefMap);
-        Opt -> DefMap = NULL;
+                Opt -> Config.LatticeCountV;
+    if (TileCount > INT_MAX / Opt -> L / Opt -> Config.LatticeCountW) {
+        fprintf(stderr, "Configured lattice exceeds the design index range.\n");
         return FALSE;
     }
+    TileCount *= Opt -> Config.LatticeCountW;
+    if (!OptPrepareBodyTilings(Opt))
+        return FALSE;
 
     Opt -> Lattice.TileCount = (int) TileCount;
     fprintf(stderr,
@@ -3661,7 +3878,7 @@ static CagdRType *ReadTileData(const OptWorkflowStateStruct *Opt,
 * DESCRIPTION:                                                             *
 * Initializes per-run containers, macro shape, tile topology, and results. *
 ***************************************************************************/
-static void InitializeWorkflowState(OptWorkflowStateStruct *Opt)
+static int InitializeWorkflowState(OptWorkflowStateStruct *Opt)
 {
     OptMakeRunFolderName(Opt -> FolderName);
     IRIT_ZAP_MEM(&Opt -> FEM, sizeof(Opt -> FEM));
@@ -3673,8 +3890,10 @@ static void InitializeWorkflowState(OptWorkflowStateStruct *Opt)
     Opt -> ConsecutiveSmallChanges = 0;
 
     ResolveLatticeLayout(Opt);
-    if (!OptLoadDefMap(Opt))
-        OptFatal("Cannot initialize macro-shape deformation maps");
+    if (!OptLoadDefMap(Opt)) {
+        fprintf(stderr, "Cannot initialize macro-shape deformation maps.\n");
+        return FALSE;
+    }
 
     if (!InitLatticeModel(Opt))
         OptFatal("Cannot initialize persistent lattice model");
@@ -3684,6 +3903,7 @@ static void InitializeWorkflowState(OptWorkflowStateStruct *Opt)
         OptFatal("Cannot initialize persistent neighbour groups");
 
     InitOrResetResultsArray(Opt);
+    return TRUE;
 }
 
 /***************************************************************************
@@ -3982,6 +4202,8 @@ static void DestroyLatticeModel(OptWorkflowStateStruct *Opt)
 ***************************************************************************/
 static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
 {
+    int B, D;
+
     FEMModelReset(&Opt -> FEM);
     ScalarFieldReset(&Opt -> SedData);
     ScalarFieldReset(&Opt -> VolumeData);
@@ -3992,6 +4214,26 @@ static void FreeWorkflowState(OptWorkflowStateStruct *Opt)
         Opt -> MeshPatchOwnerCount = 0;
     }
 
+    if (Opt -> BodyTilings != NULL) {
+        for (B = 0; B < Opt -> DefMapCount; ++B) {
+            OptBodyTilingStruct *Tiling = &Opt -> BodyTilings[B];
+
+            if (Tiling -> Map != NULL)
+                IritMvarMVFree(Tiling -> Map);
+            for (D = 0; D < 3; ++D) {
+                OptSpanTilingStruct *Axis = &Tiling -> Axis[D];
+
+                if (Axis -> Knots != NULL)
+                    IritFree(Axis -> Knots);
+                if (Axis -> TileOffsets != NULL)
+                    IritFree(Axis -> TileOffsets);
+                if (Axis -> Steps.TilesPerIntervals != NULL)
+                    IritFree(Axis -> Steps.TilesPerIntervals);
+            }
+        }
+        IritFree(Opt -> BodyTilings);
+        Opt -> BodyTilings = NULL;
+    }
     if (Opt -> DefMap != NULL) {
         IritTrivTVFreeList(Opt -> DefMap);
         Opt -> DefMap = NULL;
@@ -4174,26 +4416,50 @@ static CagdBType ScalarFieldTryGet(const OptScalarFieldStruct *Field,
 static int OptCopyConfigToWorkflow(const OptConfigStruct *Config,
                                    OptWorkflowStateStruct *Opt)
 {
-    int D;
+    int B, D;
 
     Opt -> Config = *Config;
 
     /* Break the shallow pointer copy before allocating workflow-owned lists. */
-    for (D = 0; D < 3; ++D)
+    for (D = 0; D < 3; ++D) {
         Opt -> Config.LatticeCountLists[D] = NULL;
+        Opt -> Config.LatticeSegments[D] = NULL;
+    }
 
     for (D = 0; D < 3; ++D) {
-        size_t Bytes;
+        int Length = Config -> LatticeCountListLengths[D];
+        size_t Bytes = (size_t) Length * sizeof(int);
+        const OptLatticeSegmentsStruct *Source = Config -> LatticeSegments[D];
+        OptLatticeSegmentsStruct *Dest;
 
-        Bytes = (size_t) Config -> LatticeCountListLengths[D] * sizeof(int);
-        if (Bytes == 0)
-            continue;
-        Opt -> Config.LatticeCountLists[D] = (int *) OptAllocZero(1, Bytes);
+        Opt -> Config.LatticeCountLists[D] =
+            OptAllocZero((size_t) Length, sizeof(int));
         if (Opt -> Config.LatticeCountLists[D] == NULL) {
             FreeWorkflowState(Opt);
             return FALSE;
         }
         memcpy(Opt -> Config.LatticeCountLists[D], Config -> LatticeCountLists[D], Bytes);
+        if (Source == NULL)
+            continue;
+
+        Opt -> Config.LatticeSegments[D] = Dest =
+            OptAllocZero((size_t) Length, sizeof(*Dest));
+        if (Dest == NULL) {
+            FreeWorkflowState(Opt);
+            return FALSE;
+        }
+        for (B = 0; B < Length; ++B) {
+            Dest[B].Length = Source[B].Length;
+            if (Dest[B].Length == 0)
+                continue;
+            Dest[B].Counts = OptAllocZero((size_t) Dest[B].Length, sizeof(int));
+            if (Dest[B].Counts == NULL) {
+                FreeWorkflowState(Opt);
+                return FALSE;
+            }
+            memcpy(Dest[B].Counts, Source[B].Counts,
+                   (size_t) Dest[B].Length * sizeof(int));
+        }
     }
     return TRUE;
 }

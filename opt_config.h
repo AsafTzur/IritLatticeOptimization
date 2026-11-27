@@ -16,6 +16,11 @@ enum OptParametricFace {
     OPT_FACE_W_MAX = 5
 };
 
+typedef struct OptLatticeSegmentsStruct {
+    int *Counts;                /* Positive repeat counts in knot-span order. */
+    int Length;                 /* Zero for an unbracketed body count. */
+} OptLatticeSegmentsStruct;
+
 typedef struct OptConfigStruct {
     char MacroShapePath[IRIT_OPT_MAX_PATH];
     int SimulationType;
@@ -29,7 +34,7 @@ typedef struct OptConfigStruct {
     int FemPressureFace;
     CagdRType FemPressurePa;
     int LatticeCountU, LatticeCountV, LatticeCountW;
-    int *LatticeCountLists[3];
+    int *LatticeCountLists[3];   /* U/V/W arrays of per-body total counts. */
     int LatticeCountListLengths[3];
     int BodyStackAxis;          /* 0=U, 1=V, 2=W, -1=infer from counts. */
     CagdBType UseMicroStructFFD;
@@ -59,6 +64,9 @@ typedef struct OptConfigStruct {
     CagdRType Scale, Density, YoungsModulus, PoissonRatio, SedValue;
     CagdRType MinimumThickness, SafetyFactorSed;
     CagdBType RemoveThinTiles;
+    /* Optional per-axis arrays indexed like LatticeCountLists. Each
+     * bracketed entry sums to the corresponding per-body total. */
+    OptLatticeSegmentsStruct *LatticeSegments[3];
 } OptConfigStruct;
 
 int IritOptRun(const OptConfigStruct *Config);

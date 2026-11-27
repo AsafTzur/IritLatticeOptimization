@@ -1,5 +1,27 @@
 # Design Decisions
 
+## D-019 — Keep segmented placement at the geometry boundary
+
+Date: 2026-11-27
+
+Decision. Keep scalar per-body totals as the unified lattice dimensions.
+Store bracketed span counts alongside those totals. Exact local tiling sends
+the span counts to IRIT and combines span offsets with callback indices.
+Global FFD retains one callback grid and adjusts the placement transform
+on bracketed axes. Both methods use the same tile IDs for design variables,
+skin, FEM face selection, and export ownership.
+
+Reason. IRIT's global repeat mode consumes only the first interval count.
+Using an entirely local grid for global FFD would also subdivide unbracketed
+axes at every knot and could change their specified tile count.
+
+Update, 2026-11-27. Exact local composition uses one deformation-map span
+per tile. Earlier validation rejected a scalar when the uniform grid crossed
+a knot. To keep mixed scalar and bracketed settings usable in both modes,
+exact local tiling now rounds each span boundary to the nearest cumulative
+uniform-grid index while reserving at least one tile per span. This keeps the
+total stable and allows explicit lists to override the distribution.
+
 ## D-018 — Configure active structural regions in parametric space
 
 Date: 2026-11-19

@@ -1,6 +1,6 @@
 # Project Context
 
-Last reviewed: 2026-11-20
+Last reviewed: 2026-11-27
 
 ## Purpose
 
@@ -68,7 +68,16 @@ fixed-translation flags in X/Y/Z order.
 ### Body
 
 One trivariate macro-shape map loaded from the ITD input. Each body can have
-its own U, V, and W tile counts.
+its own U, V, and W tile counts. Each axis entry may be a scalar or a
+bracketed list with one positive count per deformation-map knot span.
+Top-level commas separate bodies in ITD order. The sum of a bracketed entry
+is the body tile count used for global indexing and stack-axis validation.
+
+Span placement follows parametric knot order. In global FFD, unbracketed
+axes keep uniform whole-domain spacing. For a segmented body using exact
+local tiling, unbracketed axes keep their tile totals and place a tile
+boundary on each knot. Each span needs at least one tile. A bracketed list
+controls the distribution explicitly.
 
 ### Tile and subtile
 

@@ -77,6 +77,26 @@ This leaves three unproven properties:
 This limitation is a suitable thesis motivation for validating the logical
 correspondence in world space and adding a geometric/solver coupling method.
 
+## Tile counts per deformation-map span
+
+The macro-map knot spans provide parametric regions for varying local lattice
+resolution. Positive integer counts define uniform subdivision within each
+span. Prefix sums link consecutive span-local coordinates to a single
+body-local tile grid and then to the existing global design-variable indices.
+
+For exact composition, scalar axes in segmented bodies retain the requested
+total. Each span boundary is assigned the nearest cumulative tile count
+subject to a minimum of one tile in every span. The Winglet joint's four
+equal V spans receive the scalar total of five as `[1,2,1,1]`.
+
+On an affine B-spline box with unequal knot spans, the generated world-space
+tile bounds matched the requested subdivisions in global FFD and exact local
+tiling. The curved IRIT torus exported in both deformation modes with all
+14 expected tile indices. Two geometry exports with different thicknesses
+retained FE connectivity and patch ownership in synthetic global FFD,
+exact local, and mixed two-body fixtures. This experiment covers geometry
+and export bookkeeping. Multi-body interface load-transfer remains open.
+
 ## Proposed interface-continuity research task
 
 Develop a correspondence method that maps boundary lattice connection points

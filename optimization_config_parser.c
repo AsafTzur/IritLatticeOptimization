@@ -332,6 +332,113 @@ static int ConfigParseCountList(const char *Text, int **Values, int *Count)
     return TRUE;
 }
 
+/* Releases all body counts and any span lists belonging to one axis. */
+static void ConfigFreeAxisCounts(OptConfigStruct *Config, int Axis)
+{
+    OptLatticeSegmentsStruct *Segments = Config->LatticeSegments[Axis];
+    int Body;
+
+    if (Segments != NULL) {
+        for (Body = 0; Body < Config->LatticeCountListLengths[Axis]; ++Body) {
+            if (Segments[Body].Counts != NULL)
+                IritFree(Segments[Body].Counts);
+        }
+        IritFree(Segments);
+    }
+    if (Config->LatticeCountLists[Axis] != NULL)
+        IritFree(Config->LatticeCountLists[Axis]);
+    Config->LatticeSegments[Axis] = NULL;
+    Config->LatticeCountLists[Axis] = NULL;
+    Config->LatticeCountListLengths[Axis] = 0;
+}
+
+/* Reads a positive count and advances past following whitespace. */
+static int ConfigReadTileCount(const char **Cursor)
+{
+    char *End;
+    long Count;
+
+    errno = 0;
+    Count = strtol(*Cursor, &End, 10);
+    if (End == *Cursor || errno == ERANGE || Count <= 0 || Count > INT_MAX)
+        return 0;
+    while (isspace((unsigned char) *End))
+        ++End;
+    *Cursor = End;
+    return (int) Count;
+}
+
+/* Reads a comma-separated sequence of scalars and bracketed span lists. */
+static int ConfigParseAxisCounts(const char *Text, OptConfigStruct *Config,
+                                 int Axis)
+{
+    const char *Cursor = Text;
+    int SpanCounts[CONFIG_LINE_MAX / 2 + 1];
+    size_t Capacity = strlen(Text) / 2 + 1;
+    int Body = 0;
+    int *Totals;
+    OptLatticeSegmentsStruct *Segments;
+
+    ConfigFreeAxisCounts(Config, Axis);
+    if (strchr(Text, '[') == NULL)
+        return ConfigParseCountList(Text, &Config->LatticeCountLists[Axis],
+                                    &Config->LatticeCountListLengths[Axis]);
+
+    Totals = Config->LatticeCountLists[Axis] =
+        IritMalloc((unsigned int) (Capacity * sizeof(*Totals)));
+    Segments = Config->LatticeSegments[Axis] =
+        IritMalloc((unsigned int) (Capacity * sizeof(*Segments)));
+    if (Totals == NULL || Segments == NULL)
+        return FALSE;
+    IRIT_ZAP_MEM(Segments, Capacity * sizeof(*Segments));
+
+    for (;;) {
+        int Total = 0, Length = 0;
+
+        while (isspace((unsigned char) *Cursor))
+            ++Cursor;
+        if (*Cursor == '[') {
+            ++Cursor;
+            for (;;) {
+                int Count = ConfigReadTileCount(&Cursor);
+
+                if (Count == 0 || Count > INT_MAX - Total)
+                    return FALSE;
+                SpanCounts[Length++] = Count;
+                Total += Count;
+                if (*Cursor != ',')
+                    break;
+                ++Cursor;
+            }
+            if (*Cursor++ != ']')
+                return FALSE;
+            while (isspace((unsigned char) *Cursor))
+                ++Cursor;
+        }
+        else {
+            Total = ConfigReadTileCount(&Cursor);
+            if (Total == 0)
+                return FALSE;
+        }
+        if (*Cursor != ',' && *Cursor != '\0')
+            return FALSE;
+        if (Length > 0) {
+            size_t Bytes = (size_t) Length * sizeof(*SpanCounts);
+
+            Segments[Body].Counts = IritMalloc((unsigned int) Bytes);
+            if (Segments[Body].Counts == NULL)
+                return FALSE;
+            memcpy(Segments[Body].Counts, SpanCounts, Bytes);
+            Segments[Body].Length = Length;
+        }
+        Totals[Body++] = Total;
+        Config->LatticeCountListLengths[Axis] = Body;
+        if (*Cursor == '\0')
+            return TRUE;
+        ++Cursor;
+    }
+}
+
 void OptimizationConfigInit(OptConfigStruct *Config)
 {
     IRIT_ZAP_MEM(Config, sizeof(*Config));
@@ -375,12 +482,8 @@ void OptimizationConfigFree(OptConfigStruct *Config)
 
     if (Config == NULL)
         return;
-    for (Direction = 0; Direction < 3; ++Direction) {
-        if (Config->LatticeCountLists[Direction] != NULL)
-            IritFree(Config->LatticeCountLists[Direction]);
-        Config->LatticeCountLists[Direction] = NULL;
-        Config->LatticeCountListLengths[Direction] = 0;
-    }
+    for (Direction = 0; Direction < 3; ++Direction)
+        ConfigFreeAxisCounts(Config, Direction);
 }
 
 /***************************************************************************
@@ -460,18 +563,15 @@ static int ConfigHandleEntry(const char *Key, const char *Value, void *Context)
         return ConfigParseFace(Value, &Config->FemPressureFace);
     CONFIG_REAL("fem_pressure_pa", FemPressurePa);
     if (strcmp(Key, "lattice_count_u") == 0) {
-        if (!ConfigParseCountList(Value, &Config->LatticeCountLists[0],
-                                  &Config->LatticeCountListLengths[0])) return FALSE;
+        if (!ConfigParseAxisCounts(Value, Config, 0)) return FALSE;
         Config->LatticeCountU = Config->LatticeCountLists[0][0]; return TRUE;
     }
     if (strcmp(Key, "lattice_count_v") == 0) {
-        if (!ConfigParseCountList(Value, &Config->LatticeCountLists[1],
-                                  &Config->LatticeCountListLengths[1])) return FALSE;
+        if (!ConfigParseAxisCounts(Value, Config, 1)) return FALSE;
         Config->LatticeCountV = Config->LatticeCountLists[1][0]; return TRUE;
     }
     if (strcmp(Key, "lattice_count_w") == 0) {
-        if (!ConfigParseCountList(Value, &Config->LatticeCountLists[2],
-                                  &Config->LatticeCountListLengths[2])) return FALSE;
+        if (!ConfigParseAxisCounts(Value, Config, 2)) return FALSE;
         Config->LatticeCountW = Config->LatticeCountLists[2][0]; return TRUE;
     }
     if (strcmp(Key, "body_stack_axis") == 0) {
@@ -552,6 +652,14 @@ static int ConfigParseFile(const char *FileName,
         *Equals = '\0';
         Value = ConfigTrim(Equals + 1);
         Key = ConfigTrim(Key);
+        if (strncmp(Key, "lattice_count_", sizeof("lattice_count_") - 1) == 0) {
+            char *Comment = strstr(Value, "//");
+
+            if (Comment != NULL) {
+                *Comment = '\0';
+                Value = ConfigTrim(Value);
+            }
+        }
         if (!Handler(Key, Value, Context)) {
             fprintf(stderr, "Invalid key or value in %s at line %d: %s\n",
                     FileName, LineNumber, Key);
@@ -565,7 +673,7 @@ static int ConfigParseFile(const char *FileName,
 
 int OptimizationConfigValidate(const OptConfigStruct *Config)
 {
-    int SkinFace;
+    int Axis, Body, SkinFace;
     CagdBType HasSkin = FALSE;
     size_t Length;
 
@@ -604,6 +712,33 @@ int OptimizationConfigValidate(const OptConfigStruct *Config)
     if (Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[1] ||
         Config->LatticeCountListLengths[0] != Config->LatticeCountListLengths[2])
         return FALSE;
+    for (Axis = 0; Axis < 3; ++Axis) {
+        const int *Totals = Config->LatticeCountLists[Axis];
+        const OptLatticeSegmentsStruct *Segments = Config->LatticeSegments[Axis];
+
+        if (Config->LatticeCountListLengths[Axis] <= 0 || Totals == NULL)
+            return FALSE;
+        for (Body = 0; Body < Config->LatticeCountListLengths[Axis]; ++Body) {
+            int I, Sum = 0;
+
+            if (Totals[Body] <= 0)
+                return FALSE;
+            if (Segments == NULL)
+                continue;
+            if (Segments[Body].Length < 0 ||
+                (Segments[Body].Length > 0 && Segments[Body].Counts == NULL))
+                return FALSE;
+            for (I = 0; I < Segments[Body].Length; ++I) {
+                int Count = Segments[Body].Counts[I];
+
+                if (Count <= 0 || Count > Totals[Body] - Sum)
+                    return FALSE;
+                Sum += Count;
+            }
+            if (Segments[Body].Length > 0 && Sum != Totals[Body])
+                return FALSE;
+        }
+    }
     if (Config->MeshSample <= 1 ||
         (double) (Config->MeshSample - 1) * (Config->MeshSample - 1) *
             (Config->MeshSample - 1) > INT_MAX)
